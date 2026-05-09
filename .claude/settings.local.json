@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import ast; ast.parse\\(open\\('server69.py'\\).read\\(\\)\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('server69.py'\\).read\\(\\)\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('student_client69.py'\\).read\\(\\)\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('teacher_client69.py'\\).read\\(\\)\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('admin_client69.py'\\).read\\(\\)\\)\")",
+      "Bash(python3 -c \"import ast; ast.parse\\(open\\('network.py'\\).read\\(\\)\\)\")",
+      "Bash(xargs kill *)",
+      "Bash(python3 server69.py)",
+      "Bash(nc -z 127.0.0.1 9999)",
+      "Bash(osascript -e 'tell application \"Terminal\" to do script \"cd \\\\\"/Users/amittelner/PycharmProjects/cyber project\\\\\" && python3 admin_client69.py\"')"
+    ]
+  }
+}
