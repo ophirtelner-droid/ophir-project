@@ -9,8 +9,7 @@ CustomTkinter-based interface for:
 """
 
 import customtkinter as ctk
-from tkinter import messagebox, simpledialog
-import threading
+from tkinter import messagebox
 from network import NetworkClient
 import os
 from PIL import Image
