@@ -175,7 +175,8 @@ def init_db(path: str):
             id          INTEGER PRIMARY KEY AUTOINCREMENT,
             title       TEXT NOT NULL,
             teacher_id  INTEGER REFERENCES users(id),
-            created_at  TEXT DEFAULT (datetime('now'))
+            created_at  TEXT DEFAULT (datetime('now')),
+            time_limit  INTEGER DEFAULT 0
         );
 
         CREATE TABLE IF NOT EXISTS questions (
@@ -217,6 +218,14 @@ def init_db(path: str):
         );
     """)
     conn.commit()
+
+    # ── Migrations for older databases ────────────────────────────────────────
+    cur.execute("PRAGMA table_info(tests)")
+    test_cols = {row[1] for row in cur.fetchall()}
+    if "time_limit" not in test_cols:
+        cur.execute("ALTER TABLE tests ADD COLUMN time_limit INTEGER DEFAULT 0")
+        conn.commit()
+        print("[DB] Migrated: added 'time_limit' column to tests")
 
     # ── Seed default admin account (if not present) ───────────────────────────
     admin_pw, admin_salt = hash_password("Admin@123")
@@ -548,6 +557,7 @@ class ClientSession:
             "ADD_QUESTION":        self.cmd_add_question,
             "DELETE_TEST":         self.cmd_delete_test,
             "EDIT_TEST_TITLE":     self.cmd_edit_test_title,
+            "SET_TIME_LIMIT":      self.cmd_set_time_limit,
             "DELETE_QUESTION":     self.cmd_delete_question,
             "LIST_TESTS":          self.cmd_list_tests,
             "GET_TEST":            self.cmd_get_test,
@@ -564,6 +574,8 @@ class ClientSession:
             "REMOVE_USER":         self.cmd_remove_user,
             "LIST_CLASS_MEMBERS":  self.cmd_list_class_members,
             "LIST_USERS":          self.cmd_list_users,
+            "MY_CLASS":            self.cmd_my_class,
+            "LIST_STUDENTS":       self.cmd_list_students,
             "GET_USER_DETAILS":    self.cmd_get_user_details,
             "CHECK_CLASS":         self.cmd_check_class,
             # ── Logging commands ───────────────────────────────────────────
@@ -726,17 +738,42 @@ class ClientSession:
     # ── Teacher commands ──────────────────────
 
     def cmd_create_test(self, args):
-        # CREATE_TEST|title
+        # CREATE_TEST|title[|time_limit_minutes]
         self._require_role("teacher")
         title = args[0]
+        time_limit = 0
+        if len(args) >= 2:
+            try:
+                time_limit = max(0, int(args[1]))
+            except ValueError:
+                time_limit = 0
         cur = self.db.cursor()
-        cur.execute("INSERT INTO tests (title, teacher_id) VALUES (?,?)",
-                    (title, self.user_id))
+        cur.execute("INSERT INTO tests (title, teacher_id, time_limit) VALUES (?,?,?)",
+                    (title, self.user_id, time_limit))
         self.db.commit()
         test_id = cur.lastrowid
-        # Log test creation
-        log_activity(self.db, self.user_id, self.username, "CREATE_TEST", f"Test ID: {test_id}, Title: {title}", self.ip)
+        log_activity(self.db, self.user_id, self.username, "CREATE_TEST",
+                     f"Test ID: {test_id}, Title: {title}, Time: {time_limit}m", self.ip)
         return f"OK|{test_id}"
+
+    def cmd_set_time_limit(self, args):
+        # SET_TIME_LIMIT|test_id|minutes
+        self._require_role("teacher")
+        if len(args) < 2:
+            return "ERROR|Missing test_id or minutes"
+        test_id = int(args[0])
+        try:
+            minutes = max(0, int(args[1]))
+        except ValueError:
+            return "ERROR|Invalid minutes value"
+        cur = self.db.cursor()
+        cur.execute("SELECT teacher_id FROM tests WHERE id=?", (test_id,))
+        row = cur.fetchone()
+        if not row or row[0] != self.user_id:
+            return "ERROR|Not your test"
+        cur.execute("UPDATE tests SET time_limit=? WHERE id=?", (minutes, test_id))
+        self.db.commit()
+        return "OK|Time limit updated"
 
     def cmd_add_question(self, args):
         # ADD_QUESTION|test_id|position|qtype|prompt|opt_a|opt_b|opt_c|opt_d|answer
@@ -834,7 +871,8 @@ class ClientSession:
             cur.execute("""
                 SELECT t.id, t.title,
                        COUNT(q.id) as qcount,
-                       t.created_at
+                       t.created_at,
+                       COALESCE(t.time_limit, 0)
                 FROM tests t
                 LEFT JOIN questions q ON q.test_id = t.id
                 WHERE t.teacher_id=?
@@ -846,7 +884,8 @@ class ClientSession:
             cur.execute("""
                 SELECT t.id, t.title,
                        COUNT(q.id) as qcount,
-                       t.created_at
+                       t.created_at,
+                       COALESCE(t.time_limit, 0)
                 FROM tests t
                 LEFT JOIN questions q ON q.test_id = t.id
                 WHERE t.teacher_id IN (
@@ -866,7 +905,7 @@ class ClientSession:
             return "TESTS|"
         parts = ["TESTS"]
         for r in rows:
-            parts.append(f"{r[0]}~{r[1]}~{r[2]}~{r[3]}")
+            parts.append(f"{r[0]}~{r[1]}~{r[2]}~{r[3]}~{r[4]}")
         return "|".join(parts)
 
     def cmd_get_test(self, args):
@@ -874,7 +913,7 @@ class ClientSession:
         self._require_login()
         test_id = int(args[0])
         cur = self.db.cursor()
-        cur.execute("SELECT title FROM tests WHERE id=?", (test_id,))
+        cur.execute("SELECT title, COALESCE(time_limit, 0) FROM tests WHERE id=?", (test_id,))
         t = cur.fetchone()
         if not t:
             return "ERROR|Test not found"
@@ -884,8 +923,8 @@ class ClientSession:
             FROM questions WHERE test_id=? ORDER BY position
         """, (test_id,))
         questions = cur.fetchall()
-        # Format: TEST_DATA|title|q1_id~pos~qtype~prompt~a~b~c~d~ans|...
-        parts = ["TEST_DATA", t[0]]
+        # Format: TEST_DATA|title|time_limit|q1_id~pos~qtype~prompt~a~b~c~d~ans|...
+        parts = ["TEST_DATA", t[0], str(t[1])]
         for q in questions:
             # Students don't get the answer — send blank
             ans = q[8] if self.role == "teacher" else ""
@@ -899,6 +938,11 @@ class ClientSession:
         answer_pairs = args[1:]  # each is "qid:student_answer"
 
         cur = self.db.cursor()
+        # Block retakes: one submission per (test, student)
+        cur.execute("SELECT 1 FROM submissions WHERE test_id=? AND student_id=?",
+                    (test_id, self.user_id))
+        if cur.fetchone():
+            return "ERROR|You have already submitted this test"
         # Fetch correct answers
         cur.execute("SELECT id, answer FROM questions WHERE test_id=?", (test_id,))
         correct = {row[0]: row[1].strip().lower() for row in cur.fetchall()}
@@ -1062,12 +1106,35 @@ class ClientSession:
         parts = ["CLASSES"] + [f"{r[0]}~{r[1]}" for r in rows]
         return "|".join(parts)
 
+    def _require_admin_or_own_class(self, class_id: int):
+        """Allow admins freely; allow teachers only for their own class."""
+        self._require_login()
+        if self.role == "admin":
+            return
+        if self.role == "teacher":
+            cur = self.db.cursor()
+            cur.execute("SELECT 1 FROM class_members WHERE class_id=? AND user_id=?",
+                        (class_id, self.user_id))
+            if cur.fetchone():
+                return
+            raise PermissionError("Teachers can only manage their own class")
+        raise PermissionError("Requires admin or teacher role")
+
     def cmd_assign_user(self, args):
         # ASSIGN_USER|user_id|class_id
-        self._require_admin()
         if len(args) < 2:
             return "ERROR|Missing user_id or class_id"
         user_id, class_id = int(args[0]), int(args[1])
+        self._require_admin_or_own_class(class_id)
+        cur = self.db.cursor()
+        # Teachers can only assign students, not other teachers or admins
+        if self.role == "teacher":
+            cur.execute("SELECT role FROM users WHERE id=?", (user_id,))
+            row = cur.fetchone()
+            if not row:
+                return "ERROR|User not found"
+            if row[0] != "student":
+                return "ERROR|Teachers can only assign students to their class"
         # Remove from any previous class first (one class per user)
         cur = self.db.cursor()
         cur.execute("DELETE FROM class_members WHERE user_id=?", (user_id,))
@@ -1087,10 +1154,10 @@ class ClientSession:
 
     def cmd_remove_user(self, args):
         # REMOVE_USER|user_id|class_id
-        self._require_admin()
         if len(args) < 2:
             return "ERROR|Missing user_id or class_id"
         user_id, class_id = int(args[0]), int(args[1])
+        self._require_admin_or_own_class(class_id)
         cur = self.db.cursor()
         # Get user and class info for logging before deletion
         cur.execute("SELECT username FROM users WHERE id=?", (user_id,))
@@ -1110,10 +1177,10 @@ class ClientSession:
 
     def cmd_list_class_members(self, args):
         # LIST_CLASS_MEMBERS|class_id
-        self._require_admin()
         if not args:
             return "ERROR|Missing class_id"
         class_id = int(args[0])
+        self._require_admin_or_own_class(class_id)
         cur = self.db.cursor()
         cur.execute("""
             SELECT u.id, u.username, u.role
@@ -1145,6 +1212,40 @@ class ClientSession:
         if not rows:
             return "USERS|"
         parts = ["USERS"] + [f"{r[0]}~{r[1]}~{r[2]}~{r[3]}" for r in rows]
+        return "|".join(parts)
+
+    def cmd_my_class(self, args):
+        # MY_CLASS  → returns the teacher's class id and name, or empty if none
+        self._require_role("teacher")
+        cur = self.db.cursor()
+        cur.execute("""
+            SELECT c.id, c.name
+            FROM class_members cm
+            JOIN classes c ON c.id = cm.class_id
+            WHERE cm.user_id=?
+            LIMIT 1
+        """, (self.user_id,))
+        row = cur.fetchone()
+        if not row:
+            return "MY_CLASS|"
+        return f"MY_CLASS|{row[0]}~{row[1]}"
+
+    def cmd_list_students(self, args):
+        # LIST_STUDENTS  → for teachers: all student users with their current class
+        self._require_role("teacher")
+        cur = self.db.cursor()
+        cur.execute("""
+            SELECT u.id, u.username, COALESCE(c.name, '') as class_name
+            FROM users u
+            LEFT JOIN class_members cm ON cm.user_id = u.id
+            LEFT JOIN classes c ON c.id = cm.class_id
+            WHERE u.role = 'student'
+            ORDER BY u.username
+        """)
+        rows = cur.fetchall()
+        if not rows:
+            return "STUDENTS|"
+        parts = ["STUDENTS"] + [f"{r[0]}~{r[1]}~{r[2]}" for r in rows]
         return "|".join(parts)
 
     def cmd_get_user_details(self, args):

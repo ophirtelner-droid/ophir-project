@@ -64,7 +64,7 @@ def capture_webcam_snapshot(username: str) -> str:
 # ─────────────────────────────────────────────
 
 def parse_tests(response: str):
-    """TESTS|id~title~qcount~date|..."""
+    """TESTS|id~title~qcount~date~time_limit|..."""
     parts = response.split("|")
     if parts[0] != "TESTS" or len(parts) < 2 or parts[1] == "":
         return []
@@ -72,10 +72,11 @@ def parse_tests(response: str):
     for item in parts[1:]:
         fields = item.split("~")
         tests.append({
-            "id":      int(fields[0]),
-            "title":   fields[1],
-            "qcount":  int(fields[2]),
-            "date":    fields[3],
+            "id":         int(fields[0]),
+            "title":      fields[1],
+            "qcount":     int(fields[2]),
+            "date":       fields[3],
+            "time_limit": int(fields[4]) if len(fields) > 4 and fields[4].isdigit() else 0,
         })
     return tests
 
@@ -391,6 +392,7 @@ class TeacherApp(ctk.CTkToplevel):
             ("🗑",  "Delete Test",   "#7f0000", self.delete_selected_test),
             ("📤",  "Share Test",    "#0D4D6B", self.share_selected_test),
             ("📊",  "View Results",  "#3a3a00", self.view_results),
+            ("👥",  "My Class",      "#1f4d2c", self.open_class_manager),
             ("📋",  "Activity Logs", "#3d1f6e", self.view_activity_logs),
         ]:
             ctk.CTkButton(self.sidebar, text=f"{icon}  {label}",
@@ -517,10 +519,14 @@ class TeacherApp(ctk.CTkToplevel):
             messagebox.showerror("Error", parts[1])
             return
 
-        # FORMAT: TEST_DATA|title|q1_id~pos~qtype~prompt~a~b~c~d~ans|...
+        # FORMAT: TEST_DATA|title|time_limit|q1_id~pos~qtype~prompt~a~b~c~d~ans|...
         title = parts[1]
+        try:
+            time_limit = int(parts[2])
+        except (ValueError, IndexError):
+            time_limit = 0
         questions = []
-        for q_str in parts[2:]:
+        for q_str in parts[3:]:
             if not q_str: continue
             q_parts = q_str.split("~")
             q = {
@@ -537,7 +543,7 @@ class TeacherApp(ctk.CTkToplevel):
             questions.append(q)
 
         editor = TestEditorWindow(self, self.net, test_id=self.selected_test_id,
-                                  title=title, questions=questions)
+                                  title=title, questions=questions, time_limit=time_limit)
         editor.grab_set()
 
     # ── Delete ──────────────────────────────────
@@ -658,6 +664,156 @@ class TeacherApp(ctk.CTkToplevel):
         """Open activity log viewer window"""
         log_viewer = ActivityLogViewer(self, self.net)
         log_viewer.grab_set()
+
+    def open_class_manager(self):
+        """Open the teacher's class roster manager."""
+        mgr = ClassManagerWindow(self, self.net)
+        mgr.grab_set()
+
+
+# ─────────────────────────────────────────────
+#  Class Manager window  (teacher's own class roster)
+# ─────────────────────────────────────────────
+
+class ClassManagerWindow(ctk.CTkToplevel):
+    def __init__(self, parent: TeacherApp, net: NetworkClient):
+        super().__init__(parent)
+        self.net = net
+        self.title("My Class")
+        self.geometry("720x560")
+        self.class_id = None
+        self.class_name = None
+        self._build_ui()
+        self._load()
+
+    def _build_ui(self):
+        self.header_lbl = ctk.CTkLabel(self, text="Loading…",
+                                       font=ctk.CTkFont(size=16, weight="bold"))
+        self.header_lbl.pack(pady=(14, 8))
+
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=12, pady=8)
+
+        # Left: roster
+        left = ctk.CTkFrame(body)
+        left.pack(side="left", fill="both", expand=True, padx=(0, 6))
+        ctk.CTkLabel(left, text="Students in your class",
+                     font=ctk.CTkFont(size=13, weight="bold")).pack(pady=8)
+        self.roster_scroll = ctk.CTkScrollableFrame(left)
+        self.roster_scroll.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+
+        # Right: all students
+        right = ctk.CTkFrame(body)
+        right.pack(side="left", fill="both", expand=True, padx=(6, 0))
+        ctk.CTkLabel(right, text="All students",
+                     font=ctk.CTkFont(size=13, weight="bold")).pack(pady=8)
+        self.all_scroll = ctk.CTkScrollableFrame(right)
+        self.all_scroll.pack(fill="both", expand=True, padx=8, pady=(0, 8))
+
+        ctk.CTkButton(self, text="🔄  Refresh", command=self._load).pack(pady=(0, 12))
+
+    def _load(self):
+        # Find my class
+        resp = self.net.request("MY_CLASS")
+        parts = resp.split("|")
+        if len(parts) < 2 or not parts[1]:
+            self.class_id = None
+            self.class_name = None
+            self.header_lbl.configure(
+                text="You are not assigned to a class. Ask the admin to add you.",
+                text_color="#ff7777")
+            for w in list(self.roster_scroll.winfo_children()) + list(self.all_scroll.winfo_children()):
+                w.destroy()
+            return
+        cid_name = parts[1].split("~")
+        self.class_id = int(cid_name[0])
+        self.class_name = cid_name[1]
+        self.header_lbl.configure(text=f"Class: {self.class_name}", text_color="#4dff88")
+
+        # Roster
+        resp = self.net.request(f"LIST_CLASS_MEMBERS|{self.class_id}")
+        members = []
+        if resp.startswith("MEMBERS|") and len(resp) > len("MEMBERS|"):
+            for item in resp.split("|")[1:]:
+                if not item: continue
+                f = item.split("~")
+                if f[2] == "student":
+                    members.append({"id": int(f[0]), "username": f[1]})
+        self._render_roster(members)
+
+        # All students
+        resp = self.net.request("LIST_STUDENTS")
+        students = []
+        if resp.startswith("STUDENTS|") and len(resp) > len("STUDENTS|"):
+            for item in resp.split("|")[1:]:
+                if not item: continue
+                f = item.split("~")
+                students.append({"id": int(f[0]), "username": f[1], "class": f[2]})
+        member_ids = {m["id"] for m in members}
+        self._render_all(students, member_ids)
+
+    def _render_roster(self, members):
+        for w in self.roster_scroll.winfo_children():
+            w.destroy()
+        if not members:
+            ctk.CTkLabel(self.roster_scroll, text="(no students yet)",
+                         text_color="gray").pack(pady=20)
+            return
+        for m in members:
+            row = ctk.CTkFrame(self.roster_scroll)
+            row.pack(fill="x", pady=2, padx=4)
+            ctk.CTkLabel(row, text=f"👤 {m['username']}",
+                         font=ctk.CTkFont(size=12)).pack(side="left", padx=10, pady=6)
+            ctk.CTkButton(row, text="Remove", width=80, height=26,
+                          fg_color="#7f0000", hover_color="#9f1010",
+                          command=lambda uid=m["id"]: self._remove(uid)).pack(side="right", padx=8)
+
+    def _render_all(self, students, member_ids):
+        for w in self.all_scroll.winfo_children():
+            w.destroy()
+        if not students:
+            ctk.CTkLabel(self.all_scroll, text="(no students registered)",
+                         text_color="gray").pack(pady=20)
+            return
+        for s in students:
+            row = ctk.CTkFrame(self.all_scroll)
+            row.pack(fill="x", pady=2, padx=4)
+            in_my_class = s["id"] in member_ids
+            current = s["class"] if s["class"] else "(no class)"
+            label_color = "#4dff88" if in_my_class else "gray"
+            ctk.CTkLabel(row, text=f"👤 {s['username']}",
+                         font=ctk.CTkFont(size=12)).pack(side="left", padx=10, pady=6)
+            ctk.CTkLabel(row, text=current, text_color=label_color,
+                         font=ctk.CTkFont(size=10)).pack(side="left", padx=4)
+            if in_my_class:
+                ctk.CTkLabel(row, text="✓ in class", text_color="#4dff88",
+                             font=ctk.CTkFont(size=10)).pack(side="right", padx=8)
+            else:
+                ctk.CTkButton(row, text="Add", width=60, height=26,
+                              command=lambda uid=s["id"], uname=s["username"], cls=s["class"]:
+                                  self._add(uid, uname, cls)).pack(side="right", padx=8)
+
+    def _add(self, user_id, username, current_class):
+        if current_class:
+            if not messagebox.askyesno("Move student?",
+                                       f"{username} is in '{current_class}'. Moving them to your class will remove them from there. Continue?"):
+                return
+        resp = self.net.request(f"ASSIGN_USER|{user_id}|{self.class_id}")
+        parts = resp.split("|")
+        if parts[0] == "OK":
+            self._load()
+        else:
+            messagebox.showerror("Error", parts[1] if len(parts) > 1 else "Failed")
+
+    def _remove(self, user_id):
+        if not messagebox.askyesno("Remove student?", "Remove this student from your class?"):
+            return
+        resp = self.net.request(f"REMOVE_USER|{user_id}|{self.class_id}")
+        parts = resp.split("|")
+        if parts[0] == "OK":
+            self._load()
+        else:
+            messagebox.showerror("Error", parts[1] if len(parts) > 1 else "Failed")
 
 
 # ─────────────────────────────────────────────
@@ -786,15 +942,16 @@ class ActivityLogViewer(ctk.CTkToplevel):
 # ─────────────────────────────────────────────
 
 class TestEditorWindow(ctk.CTkToplevel):
-    def __init__(self, parent: TeacherApp, net: NetworkClient, test_id=None, title="", questions=None):
+    def __init__(self, parent: TeacherApp, net: NetworkClient, test_id=None, title="", questions=None, time_limit=0):
         super().__init__(parent)
         self.parent_app = parent
         self.net = net
         self.title("Test Editor")
-        self.geometry("760x640")
+        self.geometry("760x680")
         self.questions = questions if questions is not None else []
         self.test_id = test_id
         self.initial_title = title
+        self.initial_time_limit = time_limit
         self._build_ui()
 
     def _build_ui(self):
@@ -802,12 +959,17 @@ class TestEditorWindow(ctk.CTkToplevel):
         top.pack(fill="x", padx=16, pady=12)
 
         ctk.CTkLabel(top, text="Test Title:").pack(side="left")
-        self.title_entry = ctk.CTkEntry(top, width=320, placeholder_text="My Test Title")
+        self.title_entry = ctk.CTkEntry(top, width=260, placeholder_text="My Test Title")
         if self.initial_title:
             self.title_entry.insert(0, self.initial_title)
         self.title_entry.pack(side="left", padx=8)
-        
-        btn_text = "Save Title" if self.test_id else "Create Test"
+
+        ctk.CTkLabel(top, text="Time (min, 0=∞):").pack(side="left", padx=(8, 4))
+        self.time_limit_entry = ctk.CTkEntry(top, width=60)
+        self.time_limit_entry.insert(0, str(self.initial_time_limit))
+        self.time_limit_entry.pack(side="left", padx=4)
+
+        btn_text = "Save" if self.test_id else "Create Test"
         self.create_btn = ctk.CTkButton(top, text=btn_text, command=self.create_test)
         self.create_btn.pack(side="left", padx=4)
 
@@ -880,17 +1042,28 @@ class TestEditorWindow(ctk.CTkToplevel):
         if not title:
             messagebox.showwarning("Input Error", "Please enter a test title.")
             return
-        
+
+        try:
+            time_limit = max(0, int(self.time_limit_entry.get().strip() or "0"))
+        except ValueError:
+            messagebox.showwarning("Input Error", "Time limit must be a whole number of minutes.")
+            return
+
         if self.test_id:
             resp = self.net.request(f"EDIT_TEST_TITLE|{self.test_id}|{title}")
             parts = resp.split("|")
-            if parts[0] == "OK":
-                self.status_lbl.configure(text="✅ Title updated", text_color="#4dff88")
-            else:
+            if parts[0] != "OK":
                 messagebox.showerror("Error", parts[1])
+                return
+            resp2 = self.net.request(f"SET_TIME_LIMIT|{self.test_id}|{time_limit}")
+            parts2 = resp2.split("|")
+            if parts2[0] != "OK":
+                messagebox.showerror("Error", parts2[1])
+                return
+            self.status_lbl.configure(text="✅ Test updated", text_color="#4dff88")
             return
 
-        resp = self.net.request(f"CREATE_TEST|{title}")
+        resp = self.net.request(f"CREATE_TEST|{title}|{time_limit}")
         parts = resp.split("|")
         if parts[0] == "OK":
             sounds.success()

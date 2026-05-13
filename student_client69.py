@@ -144,21 +144,26 @@ def parse_tests(response: str):
     for item in parts[1:]:
         f = item.split("~")
         tests.append({"id": int(f[0]), "title": f[1],
-                       "qcount": int(f[2]), "date": f[3]})
+                       "qcount": int(f[2]), "date": f[3],
+                       "time_limit": int(f[4]) if len(f) > 4 and f[4].isdigit() else 0})
     return tests
 
 
 def parse_test_data(response: str):
     """
-    TEST_DATA|title|qid~pos~qtype~prompt~optA~optB~optC~optD~ans|...
-    Returns (title, [question_dicts])
+    TEST_DATA|title|time_limit|qid~pos~qtype~prompt~optA~optB~optC~optD~ans|...
+    Returns (title, time_limit_minutes, [question_dicts])
     """
     parts = response.split("|")
     if parts[0] != "TEST_DATA":
-        return None, []
+        return None, 0, []
     title = parts[1]
+    try:
+        time_limit = int(parts[2])
+    except (ValueError, IndexError):
+        time_limit = 0
     questions = []
-    for raw in parts[2:]:
+    for raw in parts[3:]:
         f = raw.split("~")
         questions.append({
             "id":      int(f[0]),
@@ -169,7 +174,7 @@ def parse_test_data(response: str):
             "opt_c":   f[6], "opt_d": f[7],
             "answer":  f[8],
         })
-    return title, questions
+    return title, time_limit, questions
 
 
 def parse_results(response: str):
@@ -676,8 +681,10 @@ class StudentApp(ctk.CTkToplevel):
         ctk.CTkLabel(info_frame, text=f"📝  {test['title']}",
                      font=ctk.CTkFont(size=14, weight="bold"),
                      text_color="white", anchor="w").pack(anchor="w")
+        tl = test.get("time_limit", 0)
+        time_text = f"  •  ⏱ {tl} min" if tl > 0 else "  •  ⏱ no limit"
         ctk.CTkLabel(info_frame,
-                     text=f"{test['qcount']} question(s)  •  {test['date'][:10]}",
+                     text=f"{test['qcount']} question(s)  •  {test['date'][:10]}{time_text}",
                      font=ctk.CTkFont(size=11), text_color=_DIM,
                      anchor="w").pack(anchor="w", pady=(2, 0))
 
@@ -752,10 +759,10 @@ class StudentApp(ctk.CTkToplevel):
 
         # Fetch test data
         resp = self.net.request(f"GET_TEST|{test_id}")
-        title, questions = parse_test_data(resp)
+        title, time_limit, questions = parse_test_data(resp)
 
         # Create test interface
-        test_app = TestTakingWindow(test_window, self.net, title, questions, test_id, self.username)
+        test_app = TestTakingWindow(test_window, self.net, title, questions, test_id, self.username, time_limit)
         test_app.show_question(0)
 
     def _exit_test(self, window):
@@ -767,7 +774,7 @@ class StudentApp(ctk.CTkToplevel):
 class TestTakingWindow:
     """Handles the actual test-taking interface."""
     
-    def __init__(self, parent, net, title, questions, test_id, username):
+    def __init__(self, parent, net, title, questions, test_id, username, time_limit=0):
         self.parent = parent
         self.net = net
         self.title = title
@@ -776,8 +783,15 @@ class TestTakingWindow:
         self.username = username
         self.current_q = 0
         self.answers = {}  # question_id -> answer
-        
+        self.time_limit_minutes = time_limit  # 0 = unlimited
+        self.remaining_seconds = time_limit * 60 if time_limit > 0 else 0
+        self.timer_label = None
+        self.submitted = False
+        self._timer_job = None
+
         self._build_ui()
+        if self.time_limit_minutes > 0:
+            self._tick_timer()
     
     def _build_ui(self):
         # Header
@@ -790,6 +804,12 @@ class TestTakingWindow:
         self.progress_label = ctk.CTkLabel(header, text=f"Question 1 of {len(self.questions)}",
                                           font=ctk.CTkFont(size=12), text_color="gray")
         self.progress_label.pack(side="right", padx=20, pady=15)
+
+        if self.time_limit_minutes > 0:
+            self.timer_label = ctk.CTkLabel(header, text="",
+                                            font=ctk.CTkFont(size=14, weight="bold"),
+                                            text_color="#ffcc00")
+            self.timer_label.pack(side="right", padx=20, pady=15)
         
         # Question area
         self.q_frame = ctk.CTkFrame(self.parent)
@@ -898,20 +918,55 @@ class TestTakingWindow:
         if answer:
             self.answers[question_id] = answer
     
+    def _tick_timer(self):
+        """Update countdown each second; auto-submit when it hits zero."""
+        if self.submitted:
+            return
+        if self.remaining_seconds <= 0:
+            if self.timer_label:
+                self.timer_label.configure(text="⏰ Time's up!", text_color="#ff4d4d")
+            self._auto_submit()
+            return
+        mins, secs = divmod(self.remaining_seconds, 60)
+        if self.timer_label:
+            color = "#ff4d4d" if self.remaining_seconds <= 30 else "#ffcc00"
+            self.timer_label.configure(text=f"⏱ {mins:02d}:{secs:02d}", text_color=color)
+        self.remaining_seconds -= 1
+        try:
+            self._timer_job = self.parent.after(1000, self._tick_timer)
+        except Exception:
+            pass
+
+    def _auto_submit(self):
+        """Submit without confirmation when time runs out."""
+        if self.submitted:
+            return
+        self._save_current_answer()
+        self._do_submit(auto=True)
+
     def submit_test(self):
         """Submit the completed test."""
         self._save_current_answer()
-        
-        # Confirm submission
-        if not messagebox.askyesno("Submit Test", 
+
+        if not messagebox.askyesno("Submit Test",
                                    f"Are you sure you want to submit your answers?\n"
                                    f"You've answered {len(self.answers)} out of {len(self.questions)} questions."):
             return
-        
-        # Format answers for server
+        self._do_submit(auto=False)
+
+    def _do_submit(self, auto: bool = False):
+        if self.submitted:
+            return
+        self.submitted = True
+        if self._timer_job is not None:
+            try:
+                self.parent.after_cancel(self._timer_job)
+            except Exception:
+                pass
+
         answer_pairs = [f"{qid}:{ans}" for qid, ans in self.answers.items()]
         cmd = f"SUBMIT_TEST|{self.test_id}|" + "|".join(answer_pairs)
-        
+
         try:
             resp = self.net.request(cmd)
             parts = resp.split("|")
@@ -921,7 +976,8 @@ class TestTakingWindow:
                     sounds.submit_pass()
                 else:
                     sounds.submit_fail()
-                messagebox.showinfo("Test Submitted", f"Your test has been submitted!\nScore: {score:.1f}%")
+                prefix = "⏰ Time expired — test auto-submitted!\n\n" if auto else ""
+                messagebox.showinfo("Test Submitted", f"{prefix}Your test has been submitted!\nScore: {score:.1f}%")
                 _kiosk_exit(self.parent)
                 self.parent.destroy()
             else:
