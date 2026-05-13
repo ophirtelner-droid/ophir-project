@@ -14,7 +14,6 @@ from network import NetworkClient
 import os
 import platform
 from PIL import Image
-import subprocess
 import sounds
 
 try:
