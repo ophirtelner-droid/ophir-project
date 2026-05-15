@@ -838,8 +838,14 @@ class TestTakingWindow:
         ctk.CTkLabel(header, text=f"📝 {self.title}",
                      font=ctk.CTkFont(size=18, weight="bold")).pack(side="left", padx=20, pady=15)
         
+        # Submit lives in the header so it's never hidden by the OS taskbar/dock
+        self.submit_btn = ctk.CTkButton(header, text="Submit Test", width=130,
+                                        fg_color="#d32f2f", hover_color="#b71c1c",
+                                        command=self.submit_test, state="disabled")
+        self.submit_btn.pack(side="right", padx=14, pady=10)
+
         self.progress_label = ctk.CTkLabel(header, text=f"Question 1 of {len(self.questions)}",
-                                          font=ctk.CTkFont(size=12), text_color="gray")
+                                           font=ctk.CTkFont(size=12), text_color="gray")
         self.progress_label.pack(side="right", padx=20, pady=15)
 
         if self.time_limit_minutes > 0:
@@ -847,15 +853,15 @@ class TestTakingWindow:
                                             font=ctk.CTkFont(size=14, weight="bold"),
                                             text_color="#ffcc00")
             self.timer_label.pack(side="right", padx=20, pady=15)
-        
+
         # Question area
         self.q_frame = ctk.CTkFrame(self.parent)
         self.q_frame.pack(fill="both", expand=True, padx=20, pady=10)
-        
-        # Navigation
+
+        # Navigation — prev / quit / next only (submit is in the header)
         nav_frame = ctk.CTkFrame(self.parent)
-        nav_frame.pack(fill="x", padx=20, pady=(10, 20))
-        
+        nav_frame.pack(fill="x", padx=20, pady=(10, 50))
+
         self.prev_btn = ctk.CTkButton(nav_frame, text="← Previous", width=120,
                                       command=self.prev_question, state="disabled")
         self.prev_btn.pack(side="left", padx=10)
@@ -867,11 +873,6 @@ class TestTakingWindow:
         self.next_btn = ctk.CTkButton(nav_frame, text="Next →", width=120,
                                       command=self.next_question)
         self.next_btn.pack(side="right", padx=10)
-
-        self.submit_btn = ctk.CTkButton(nav_frame, text="Submit Test", width=120,
-                                       fg_color="#d32f2f", hover_color="#b71c1c",
-                                       command=self.submit_test, state="disabled")
-        self.submit_btn.pack(side="right", padx=10)
     
     def show_question(self, q_index):
         """Display a specific question."""
