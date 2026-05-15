@@ -120,13 +120,16 @@ class ForgotPasswordDialog(ctk.CTkToplevel):
         ctk.CTkButton(self, text="Send Code", command=self.send_code).pack(pady=20)
 
     def send_code(self):
+        import re
         email = self.email_entry.get().strip()
-        if "@" not in email:
-            messagebox.showerror("Error", "Enter a valid email")
+        if not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
+            messagebox.showerror("Error", "Enter a valid email address (e.g. user@example.com)")
             return
         self.email = email
         resp = self.net.request(f"RECOVER_ACCOUNT|{email}")
-        messagebox.showinfo("Recovery", resp.split("|", 1)[1])
+        messagebox.showinfo("Recovery",
+                            resp.split("|", 1)[1] + "\n\nIf you don't receive a code within a minute, "
+                            "check that the email matches your registered address.")
         self.code_stage()
 
     def code_stage(self):
@@ -151,7 +154,8 @@ class ForgotPasswordDialog(ctk.CTkToplevel):
             messagebox.showinfo("Success", "Password reset successfully!")
             self.destroy()
         else:
-            messagebox.showerror("Failed", parts[1] if len(parts) > 1 else "Unknown error")
+            err = parts[1] if len(parts) > 1 else "Unknown error"
+            messagebox.showerror("Failed", f"{err}\n\nMake sure the code is correct and hasn't expired (10 min).")
 
 # ─────────────────────────────────────────────
 #  Register window
@@ -682,8 +686,26 @@ class ClassManagerWindow(ctk.CTkToplevel):
         self.geometry("720x560")
         self.class_id = None
         self.class_name = None
+        self._polling = True
+        self.protocol("WM_DELETE_WINDOW", self._on_close)
         self._build_ui()
         self._load()
+        self.after(8_000, self._poll)
+
+    def _on_close(self):
+        self._polling = False
+        self.destroy()
+
+    def _poll(self):
+        if not self._polling:
+            return
+        try:
+            if not self.winfo_exists():
+                return
+            self._load()
+        except Exception:
+            pass
+        self.after(8_000, self._poll)
 
     def _build_ui(self):
         self.header_lbl = ctk.CTkLabel(self, text="Loading…",
@@ -951,6 +973,7 @@ class TestEditorWindow(ctk.CTkToplevel):
         self.test_id = test_id
         self.initial_title = title
         self.initial_time_limit = time_limit
+        self.protocol("WM_DELETE_WINDOW", self.finish)
         self._build_ui()
 
     def _build_ui(self):
