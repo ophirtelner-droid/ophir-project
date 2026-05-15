@@ -42,41 +42,57 @@ def _kiosk_enter(window=None):
     """
     Enter exam lockdown mode.
     - Fullscreen + always-on-top on both platforms via Tkinter.
-    - macOS: also hides Dock/menu bar and disables Cmd+Q via AppKit when available.
+    - macOS: also hides Dock/menu bar and disables Cmd+Q/Tab via AppKit when available.
     - Grabs all input focus so the student cannot switch to another window.
+    The Tkinter lock is applied via window.after() so it fires once the
+    window is actually mapped; grab_set() silently fails on unmapped windows.
     """
     system = platform.system()
 
-    if system == "Darwin":
-        if _APPKIT_AVAILABLE:
-            try:
-                options = (
-                    Opt.NSApplicationPresentationHideDock
-                    | Opt.NSApplicationPresentationHideMenuBar
-                    | Opt.NSApplicationPresentationDisableForceQuit
-                    | Opt.NSApplicationPresentationDisableSessionTermination
-                    | Opt.NSApplicationPresentationDisableHideApplication
-                )
-                NSApp.setPresentationOptions_(options)
-                NSApp.activateIgnoringOtherApps_(True)
-                print("[Kiosk] Entered macOS kiosk mode (AppKit)")
-            except Exception as e:
-                print(f"[Kiosk] AppKit kiosk error: {e}")
-        else:
-            print("[Kiosk] AppKit unavailable, using Tkinter-only lockdown")
+    if system == "Darwin" and _APPKIT_AVAILABLE:
+        try:
+            options = (
+                Opt.NSApplicationPresentationHideDock
+                | Opt.NSApplicationPresentationHideMenuBar
+                | Opt.NSApplicationPresentationDisableForceQuit
+                | Opt.NSApplicationPresentationDisableSessionTermination
+                | Opt.NSApplicationPresentationDisableHideApplication
+            )
+            NSApp.setPresentationOptions_(options)
+            NSApp.activateIgnoringOtherApps_(True)
+            print("[Kiosk] Entered macOS AppKit kiosk mode")
+        except Exception as e:
+            print(f"[Kiosk] AppKit kiosk error: {e}")
 
-    if window:
+    if not window:
+        return
+
+    # Block the close button immediately (before the window renders)
+    window.protocol("WM_DELETE_WINDOW", lambda: None)
+
+    def _apply_lock():
         try:
             window.attributes("-fullscreen", True)
             window.attributes("-topmost", True)
-            window.protocol("WM_DELETE_WINDOW", lambda: None)
+            window.lift()
             window.focus_force()
             window.grab_set()
-            # Re-grab focus if the student manages to click away
-            window.bind("<FocusOut>", lambda _e: window.focus_force())
             print(f"[Kiosk] Window locked ({system})")
         except Exception as e:
             print(f"[Kiosk] Window lockdown error: {e}")
+
+    # Recapture focus whenever the OS tries to hand it to another window.
+    # Use after() to avoid re-entering the FocusOut handler recursively.
+    def _refocus(_event=None):
+        try:
+            window.after(10, window.focus_force)
+        except Exception:
+            pass
+
+    window.bind("<FocusOut>", _refocus)
+
+    # Defer the actual fullscreen + grab until the window is rendered
+    window.after(150, _apply_lock)
 
 
 def _kiosk_exit(window=None):
@@ -86,16 +102,16 @@ def _kiosk_exit(window=None):
     if system == "Darwin" and _APPKIT_AVAILABLE:
         try:
             NSApp.setPresentationOptions_(Opt.NSApplicationPresentationDefault)
-            print("[Kiosk] Exited macOS kiosk mode")
+            print("[Kiosk] Exited macOS AppKit kiosk mode")
         except Exception:
             pass
 
     if window:
         try:
+            window.unbind("<FocusOut>")
+            window.grab_release()
             window.attributes("-fullscreen", False)
             window.attributes("-topmost", False)
-            window.grab_release()
-            window.unbind("<FocusOut>")
             print(f"[Kiosk] Window unlocked ({system})")
         except Exception:
             pass
