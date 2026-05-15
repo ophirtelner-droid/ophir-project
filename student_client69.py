@@ -72,12 +72,18 @@ def _kiosk_enter(window=None):
 
     def _apply_lock():
         try:
-            window.attributes("-fullscreen", True)
+            sw = window.winfo_screenwidth()
+            sh = window.winfo_screenheight()
+            # overrideredirect removes the title bar and window chrome entirely,
+            # then we cover the whole screen manually.  This is more reliable
+            # than attributes("-fullscreen") on both macOS and Windows CTkToplevel.
+            window.overrideredirect(True)
+            window.geometry(f"{sw}x{sh}+0+0")
             window.attributes("-topmost", True)
             window.lift()
             window.focus_force()
             window.grab_set()
-            print(f"[Kiosk] Window locked ({system})")
+            print(f"[Kiosk] Window locked {sw}x{sh} ({system})")
         except Exception as e:
             print(f"[Kiosk] Window lockdown error: {e}")
 
@@ -91,7 +97,7 @@ def _kiosk_enter(window=None):
 
     window.bind("<FocusOut>", _refocus)
 
-    # Defer the actual fullscreen + grab until the window is rendered
+    # Defer until the window is rendered so grab_set() and geometry work
     window.after(150, _apply_lock)
 
 
@@ -110,7 +116,7 @@ def _kiosk_exit(window=None):
         try:
             window.unbind("<FocusOut>")
             window.grab_release()
-            window.attributes("-fullscreen", False)
+            window.overrideredirect(False)
             window.attributes("-topmost", False)
             print(f"[Kiosk] Window unlocked ({system})")
         except Exception:
