@@ -114,6 +114,10 @@ def capture_webcam_snapshot(username: str) -> str:
         if not cap.isOpened():
             print("[Camera] No webcam detected — skipping snapshot.")
             return ""
+        # Discard the first ~20 frames so auto-exposure can settle;
+        # without this the captured frame is nearly black.
+        for _ in range(20):
+            cap.read()
         ret, frame = cap.read()
         cap.release()
         if ret:
@@ -622,14 +626,19 @@ class StudentApp(ctk.CTkToplevel):
             self.pic_label.configure(text="📷 No picture")
 
     def update_picture(self):
-        msg = messagebox.askyesno("Update Picture", "Take a new profile picture with your webcam?")
+        # Pass parent=self so tkinter anchors the dialog to this window and
+        # returns focus cleanly — without it the window stays in a broken
+        # grab state and every click re-opens the dialog.
+        msg = messagebox.askyesno("Update Picture",
+                                  "Take a new profile picture with your webcam?",
+                                  parent=self)
         if msg:
             res = capture_webcam_snapshot(self.username)
             if res:
                 self.load_profile_picture()
-                messagebox.showinfo("Updated", "Profile picture updated!")
+                messagebox.showinfo("Updated", "Profile picture updated!", parent=self)
             else:
-                messagebox.showerror("Error", "Could not capture webcam.")
+                messagebox.showerror("Error", "Could not capture webcam.", parent=self)
 
     def _clear_main(self):
         for w in self.main.winfo_children():
