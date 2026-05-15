@@ -456,7 +456,16 @@ class LoginWindow(ctk.CTk):
                 if getattr(app, '_transitioned', False):
                     student_app = StudentApp(self.net, u)
                     student_app.mainloop()
-            self.destroy()
+
+            # Reconnect and show login again so the student can log in as someone else
+            try:
+                self.net = NetworkClient()
+                self.net.connect()
+            except Exception:
+                pass
+            self.username_entry.delete(0, "end")
+            self.password_entry.delete(0, "end")
+            self.deiconify()
         else:
             sounds.error()
             messagebox.showerror("Login Failed",
@@ -583,6 +592,12 @@ class StudentApp(ctk.CTkToplevel):
         self.quit()   # exits the mainloop() called in LoginWindow.do_login
         self.destroy()
 
+    def _logout(self):
+        self._logged_out = True
+        self.net.close()
+        self.quit()
+        self.destroy()
+
     def _build_ui(self):
         # Sidebar
         self.sidebar = ctk.CTkFrame(self, width=210, corner_radius=0, fg_color="#0A1628")
@@ -626,6 +641,11 @@ class StudentApp(ctk.CTkToplevel):
                       fg_color="#1a2030", hover_color="#253050",
                       anchor="w", height=34,
                       command=self._refresh_current).pack(padx=14, pady=(16, 3), fill="x")
+
+        ctk.CTkButton(self.sidebar, text="🚪  Log Out",
+                      fg_color="#1a2030", hover_color="#8B0000",
+                      anchor="w", height=34,
+                      command=self._logout).pack(padx=14, pady=(6, 3), fill="x", side="bottom")
 
         # Main content area
         self.main = ctk.CTkFrame(self, fg_color="#0D1B2A")
