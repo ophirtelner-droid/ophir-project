@@ -41,58 +41,62 @@ _CARD  = "#111E2E"   # card bg
 def _kiosk_enter(window=None):
     """
     Enter exam lockdown mode.
-    macOS: hides Dock/menu bar and disables Cmd+Q, Cmd+Tab via AppKit.
-    Windows: makes the window fullscreen and always-on-top via Tkinter.
+    - Fullscreen + always-on-top on both platforms via Tkinter.
+    - macOS: also hides Dock/menu bar and disables Cmd+Q via AppKit when available.
+    - Grabs all input focus so the student cannot switch to another window.
     """
     system = platform.system()
 
     if system == "Darwin":
-        if not _APPKIT_AVAILABLE:
+        if _APPKIT_AVAILABLE:
+            try:
+                options = (
+                    Opt.NSApplicationPresentationHideDock
+                    | Opt.NSApplicationPresentationHideMenuBar
+                    | Opt.NSApplicationPresentationDisableForceQuit
+                    | Opt.NSApplicationPresentationDisableSessionTermination
+                    | Opt.NSApplicationPresentationDisableHideApplication
+                )
+                NSApp.setPresentationOptions_(options)
+                NSApp.activateIgnoringOtherApps_(True)
+                print("[Kiosk] Entered macOS kiosk mode (AppKit)")
+            except Exception as e:
+                print(f"[Kiosk] AppKit kiosk error: {e}")
+        else:
             print("[Kiosk] AppKit unavailable, using Tkinter-only lockdown")
-            return
-        try:
-            options = (
-                Opt.NSApplicationPresentationHideDock
-                | Opt.NSApplicationPresentationHideMenuBar
-                | Opt.NSApplicationPresentationDisableForceQuit
-                | Opt.NSApplicationPresentationDisableSessionTermination
-                | Opt.NSApplicationPresentationDisableHideApplication
-            )
-            NSApp.setPresentationOptions_(options)
-            NSApp.activateIgnoringOtherApps_(True)
-            print("[Kiosk] Entered macOS kiosk mode (AppKit)")
-        except Exception as e:
-            print(f"[Kiosk] Error entering kiosk mode: {e}")
 
-    elif system == "Windows" and window:
+    if window:
         try:
             window.attributes("-fullscreen", True)
             window.attributes("-topmost", True)
-            # Block Alt+F4 and window-close during the exam
             window.protocol("WM_DELETE_WINDOW", lambda: None)
-            print("[Kiosk] Entered Windows kiosk mode")
+            window.focus_force()
+            window.grab_set()
+            # Re-grab focus if the student manages to click away
+            window.bind("<FocusOut>", lambda _e: window.focus_force())
+            print(f"[Kiosk] Window locked ({system})")
         except Exception as e:
-            print(f"[Kiosk] Error entering kiosk mode: {e}")
+            print(f"[Kiosk] Window lockdown error: {e}")
 
 
 def _kiosk_exit(window=None):
-    """Restore normal presentation options."""
+    """Restore normal presentation options and release the input grab."""
     system = platform.system()
 
-    if system == "Darwin":
-        if not _APPKIT_AVAILABLE:
-            return
+    if system == "Darwin" and _APPKIT_AVAILABLE:
         try:
             NSApp.setPresentationOptions_(Opt.NSApplicationPresentationDefault)
             print("[Kiosk] Exited macOS kiosk mode")
         except Exception:
             pass
 
-    elif system == "Windows" and window:
+    if window:
         try:
             window.attributes("-fullscreen", False)
             window.attributes("-topmost", False)
-            print("[Kiosk] Exited Windows kiosk mode")
+            window.grab_release()
+            window.unbind("<FocusOut>")
+            print(f"[Kiosk] Window unlocked ({system})")
         except Exception:
             pass
 
@@ -755,14 +759,12 @@ class StudentApp(ctk.CTkToplevel):
 
     def start_test(self, test_id: int, test_title: str):
         """Start taking a test - enter kiosk mode and show first question."""
-        # Create test window first so Windows kiosk can reference it
         test_window = ctk.CTkToplevel(self)
         test_window.title(f"Quizy - Test: {test_title}")
         test_window.geometry("900x600")
         test_window.minsize(800, 500)
-        test_window.protocol("WM_DELETE_WINDOW", lambda: self._exit_test(test_window))
 
-        # Enter kiosk mode (platform-aware)
+        # kiosk_enter sets WM_DELETE_WINDOW to a no-op and grabs input
         _kiosk_enter(test_window)
 
         # Fetch test data
@@ -958,7 +960,8 @@ class TestTakingWindow:
 
         if not messagebox.askyesno("Submit Test",
                                    f"Are you sure you want to submit your answers?\n"
-                                   f"You've answered {len(self.answers)} out of {len(self.questions)} questions."):
+                                   f"You've answered {len(self.answers)} out of {len(self.questions)} questions.",
+                                   parent=self.parent):
             return
         self._do_submit(auto=False)
 
@@ -985,15 +988,19 @@ class TestTakingWindow:
                 else:
                     sounds.submit_fail()
                 prefix = "⏰ Time expired — test auto-submitted!\n\n" if auto else ""
-                messagebox.showinfo("Test Submitted", f"{prefix}Your test has been submitted!\nScore: {score:.1f}%")
                 _kiosk_exit(self.parent)
+                messagebox.showinfo("Test Submitted",
+                                    f"{prefix}Your test has been submitted!\nScore: {score:.1f}%",
+                                    parent=self.parent)
                 self.parent.destroy()
             else:
                 sounds.error()
-                messagebox.showerror("Submission Failed", parts[1] if len(parts) > 1 else "Unknown error")
+                messagebox.showerror("Submission Failed",
+                                     parts[1] if len(parts) > 1 else "Unknown error",
+                                     parent=self.parent)
         except Exception as e:
             sounds.error()
-            messagebox.showerror("Error", f"Failed to submit test: {e}")
+            messagebox.showerror("Error", f"Failed to submit test: {e}", parent=self.parent)
 
 
 # ─────────────────────────────────────────────
