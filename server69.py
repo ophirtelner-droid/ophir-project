@@ -578,6 +578,7 @@ class ClientSession:
             "LIST_STUDENTS":       self.cmd_list_students,
             "GET_USER_DETAILS":    self.cmd_get_user_details,
             "CHECK_CLASS":         self.cmd_check_class,
+            "CHECK_SUBMISSION":    self.cmd_check_submission,
             # ── Logging commands ───────────────────────────────────────────
             "GET_ACTIVITY_LOGS":   self.cmd_get_activity_logs,
         }
@@ -1323,6 +1324,18 @@ class ClientSession:
         cur.execute("SELECT 1 FROM class_members WHERE user_id=?", (self.user_id,))
         in_class = 1 if cur.fetchone() else 0
         return f"CLASS_STATUS|{in_class}"
+
+    def cmd_check_submission(self, args):
+        # CHECK_SUBMISSION|test_id  — student checks if they already submitted a test
+        self._require_role("student")
+        if not args:
+            return "ERROR|Missing test_id"
+        test_id = int(args[0])
+        cur = self.db.cursor()
+        cur.execute("SELECT 1 FROM submissions WHERE test_id=? AND student_id=?",
+                    (test_id, self.user_id))
+        submitted = 1 if cur.fetchone() else 0
+        return f"SUBMISSION_STATUS|{submitted}"
 
 
 # ─────────────────────────────────────────────
