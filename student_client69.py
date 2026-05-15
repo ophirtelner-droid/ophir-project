@@ -14,7 +14,6 @@ from network import NetworkClient
 import os
 import platform
 from PIL import Image
-import subprocess
 import sounds
 
 try:
@@ -42,15 +41,15 @@ _CARD  = "#111E2E"   # card bg
 def _kiosk_enter(window=None):
     """
     Enter exam lockdown mode.
-    macOS: hides Dock/menu bar and disables Cmd+Q, Cmd+Tab via AppKit.
-    Windows: makes the window fullscreen and always-on-top via Tkinter.
+    - Fullscreen + always-on-top on both platforms via Tkinter.
+    - macOS: also hides Dock/menu bar and disables Cmd+Q/Tab via AppKit when available.
+    - Grabs all input focus so the student cannot switch to another window.
+    The Tkinter lock is applied via window.after() so it fires once the
+    window is actually mapped; grab_set() silently fails on unmapped windows.
     """
     system = platform.system()
 
-    if system == "Darwin":
-        if not _APPKIT_AVAILABLE:
-            print("[Kiosk] AppKit unavailable, using Tkinter-only lockdown")
-            return
+    if system == "Darwin" and _APPKIT_AVAILABLE:
         try:
             options = (
                 Opt.NSApplicationPresentationHideDock
@@ -61,39 +60,65 @@ def _kiosk_enter(window=None):
             )
             NSApp.setPresentationOptions_(options)
             NSApp.activateIgnoringOtherApps_(True)
-            print("[Kiosk] Entered macOS kiosk mode (AppKit)")
+            print("[Kiosk] Entered macOS AppKit kiosk mode")
         except Exception as e:
-            print(f"[Kiosk] Error entering kiosk mode: {e}")
+            print(f"[Kiosk] AppKit kiosk error: {e}")
 
-    elif system == "Windows" and window:
+    if not window:
+        return
+
+    # Block the close button immediately (before the window renders)
+    window.protocol("WM_DELETE_WINDOW", lambda: None)
+
+    def _apply_lock():
         try:
-            window.attributes("-fullscreen", True)
+            sw = window.winfo_screenwidth()
+            sh = window.winfo_screenheight()
+            # overrideredirect removes the title bar and window chrome entirely,
+            # then we cover the whole screen manually.  This is more reliable
+            # than attributes("-fullscreen") on both macOS and Windows CTkToplevel.
+            window.overrideredirect(True)
+            window.geometry(f"{sw}x{sh}+0+0")
             window.attributes("-topmost", True)
-            # Block Alt+F4 and window-close during the exam
-            window.protocol("WM_DELETE_WINDOW", lambda: None)
-            print("[Kiosk] Entered Windows kiosk mode")
+            window.lift()
+            window.focus_force()
+            window.grab_set()
+            print(f"[Kiosk] Window locked {sw}x{sh} ({system})")
         except Exception as e:
-            print(f"[Kiosk] Error entering kiosk mode: {e}")
+            print(f"[Kiosk] Window lockdown error: {e}")
 
-
-def _kiosk_exit(window=None):
-    """Restore normal presentation options."""
-    system = platform.system()
-
-    if system == "Darwin":
-        if not _APPKIT_AVAILABLE:
-            return
+    # Recapture focus whenever the OS tries to hand it to another window.
+    # Use after() to avoid re-entering the FocusOut handler recursively.
+    def _refocus(_event=None):
         try:
-            NSApp.setPresentationOptions_(Opt.NSApplicationPresentationDefault)
-            print("[Kiosk] Exited macOS kiosk mode")
+            window.after(10, window.focus_force)
         except Exception:
             pass
 
-    elif system == "Windows" and window:
+    window.bind("<FocusOut>", _refocus)
+
+    # Defer until the window is rendered so grab_set() and geometry work
+    window.after(150, _apply_lock)
+
+
+def _kiosk_exit(window=None):
+    """Restore normal presentation options and release the input grab."""
+    system = platform.system()
+
+    if system == "Darwin" and _APPKIT_AVAILABLE:
         try:
-            window.attributes("-fullscreen", False)
+            NSApp.setPresentationOptions_(Opt.NSApplicationPresentationDefault)
+            print("[Kiosk] Exited macOS AppKit kiosk mode")
+        except Exception:
+            pass
+
+    if window:
+        try:
+            window.unbind("<FocusOut>")
+            window.grab_release()
+            window.overrideredirect(False)
             window.attributes("-topmost", False)
-            print("[Kiosk] Exited Windows kiosk mode")
+            print(f"[Kiosk] Window unlocked ({system})")
         except Exception:
             pass
 
@@ -115,6 +140,10 @@ def capture_webcam_snapshot(username: str) -> str:
         if not cap.isOpened():
             print("[Camera] No webcam detected — skipping snapshot.")
             return ""
+        # Discard the first ~20 frames so auto-exposure can settle;
+        # without this the captured frame is nearly black.
+        for _ in range(20):
+            cap.read()
         ret, frame = cap.read()
         cap.release()
         if ret:
@@ -144,21 +173,26 @@ def parse_tests(response: str):
     for item in parts[1:]:
         f = item.split("~")
         tests.append({"id": int(f[0]), "title": f[1],
-                       "qcount": int(f[2]), "date": f[3]})
+                       "qcount": int(f[2]), "date": f[3],
+                       "time_limit": int(f[4]) if len(f) > 4 and f[4].isdigit() else 0})
     return tests
 
 
 def parse_test_data(response: str):
     """
-    TEST_DATA|title|qid~pos~qtype~prompt~optA~optB~optC~optD~ans|...
-    Returns (title, [question_dicts])
+    TEST_DATA|title|time_limit|qid~pos~qtype~prompt~optA~optB~optC~optD~ans|...
+    Returns (title, time_limit_minutes, [question_dicts])
     """
     parts = response.split("|")
     if parts[0] != "TEST_DATA":
-        return None, []
+        return None, 0, []
     title = parts[1]
+    try:
+        time_limit = int(parts[2])
+    except (ValueError, IndexError):
+        time_limit = 0
     questions = []
-    for raw in parts[2:]:
+    for raw in parts[3:]:
         f = raw.split("~")
         questions.append({
             "id":      int(f[0]),
@@ -169,7 +203,7 @@ def parse_test_data(response: str):
             "opt_c":   f[6], "opt_d": f[7],
             "answer":  f[8],
         })
-    return title, questions
+    return title, time_limit, questions
 
 
 def parse_results(response: str):
@@ -599,6 +633,11 @@ class StudentApp(ctk.CTkToplevel):
                       anchor="w", height=34,
                       command=self._refresh_current).pack(padx=14, pady=(16, 3), fill="x")
 
+        ctk.CTkButton(self.sidebar, text="🚪  Sign Out",
+                      fg_color="#3a1010", hover_color="#5a1a1a",
+                      anchor="w", height=34,
+                      command=self._on_close).pack(padx=14, pady=(6, 14), fill="x")
+
         # Main content area
         self.main = ctk.CTkFrame(self, fg_color="#0D1B2A")
         self.main.pack(side="left", fill="both", expand=True)
@@ -618,14 +657,19 @@ class StudentApp(ctk.CTkToplevel):
             self.pic_label.configure(text="📷 No picture")
 
     def update_picture(self):
-        msg = messagebox.askyesno("Update Picture", "Take a new profile picture with your webcam?")
+        # Pass parent=self so tkinter anchors the dialog to this window and
+        # returns focus cleanly — without it the window stays in a broken
+        # grab state and every click re-opens the dialog.
+        msg = messagebox.askyesno("Update Picture",
+                                  "Take a new profile picture with your webcam?",
+                                  parent=self)
         if msg:
             res = capture_webcam_snapshot(self.username)
             if res:
                 self.load_profile_picture()
-                messagebox.showinfo("Updated", "Profile picture updated!")
+                messagebox.showinfo("Updated", "Profile picture updated!", parent=self)
             else:
-                messagebox.showerror("Error", "Could not capture webcam.")
+                messagebox.showerror("Error", "Could not capture webcam.", parent=self)
 
     def _clear_main(self):
         for w in self.main.winfo_children():
@@ -676,8 +720,10 @@ class StudentApp(ctk.CTkToplevel):
         ctk.CTkLabel(info_frame, text=f"📝  {test['title']}",
                      font=ctk.CTkFont(size=14, weight="bold"),
                      text_color="white", anchor="w").pack(anchor="w")
+        tl = test.get("time_limit", 0)
+        time_text = f"  •  ⏱ {tl} min" if tl > 0 else "  •  ⏱ no limit"
         ctk.CTkLabel(info_frame,
-                     text=f"{test['qcount']} question(s)  •  {test['date'][:10]}",
+                     text=f"{test['qcount']} question(s)  •  {test['date'][:10]}{time_text}",
                      font=ctk.CTkFont(size=11), text_color=_DIM,
                      anchor="w").pack(anchor="w", pady=(2, 0))
 
@@ -740,22 +786,20 @@ class StudentApp(ctk.CTkToplevel):
 
     def start_test(self, test_id: int, test_title: str):
         """Start taking a test - enter kiosk mode and show first question."""
-        # Create test window first so Windows kiosk can reference it
         test_window = ctk.CTkToplevel(self)
         test_window.title(f"Quizy - Test: {test_title}")
         test_window.geometry("900x600")
         test_window.minsize(800, 500)
-        test_window.protocol("WM_DELETE_WINDOW", lambda: self._exit_test(test_window))
 
-        # Enter kiosk mode (platform-aware)
+        # kiosk_enter sets WM_DELETE_WINDOW to a no-op and grabs input
         _kiosk_enter(test_window)
 
         # Fetch test data
         resp = self.net.request(f"GET_TEST|{test_id}")
-        title, questions = parse_test_data(resp)
+        title, time_limit, questions = parse_test_data(resp)
 
         # Create test interface
-        test_app = TestTakingWindow(test_window, self.net, title, questions, test_id, self.username)
+        test_app = TestTakingWindow(test_window, self.net, title, questions, test_id, self.username, time_limit)
         test_app.show_question(0)
 
     def _exit_test(self, window):
@@ -767,7 +811,7 @@ class StudentApp(ctk.CTkToplevel):
 class TestTakingWindow:
     """Handles the actual test-taking interface."""
     
-    def __init__(self, parent, net, title, questions, test_id, username):
+    def __init__(self, parent, net, title, questions, test_id, username, time_limit=0):
         self.parent = parent
         self.net = net
         self.title = title
@@ -776,8 +820,15 @@ class TestTakingWindow:
         self.username = username
         self.current_q = 0
         self.answers = {}  # question_id -> answer
-        
+        self.time_limit_minutes = time_limit  # 0 = unlimited
+        self.remaining_seconds = time_limit * 60 if time_limit > 0 else 0
+        self.timer_label = None
+        self.submitted = False
+        self._timer_job = None
+
         self._build_ui()
+        if self.time_limit_minutes > 0:
+            self._tick_timer()
     
     def _build_ui(self):
         # Header
@@ -790,6 +841,12 @@ class TestTakingWindow:
         self.progress_label = ctk.CTkLabel(header, text=f"Question 1 of {len(self.questions)}",
                                           font=ctk.CTkFont(size=12), text_color="gray")
         self.progress_label.pack(side="right", padx=20, pady=15)
+
+        if self.time_limit_minutes > 0:
+            self.timer_label = ctk.CTkLabel(header, text="",
+                                            font=ctk.CTkFont(size=14, weight="bold"),
+                                            text_color="#ffcc00")
+            self.timer_label.pack(side="right", padx=20, pady=15)
         
         # Question area
         self.q_frame = ctk.CTkFrame(self.parent)
@@ -802,11 +859,15 @@ class TestTakingWindow:
         self.prev_btn = ctk.CTkButton(nav_frame, text="← Previous", width=120,
                                       command=self.prev_question, state="disabled")
         self.prev_btn.pack(side="left", padx=10)
-        
+
+        ctk.CTkButton(nav_frame, text="✖  Quit Test", width=120,
+                      fg_color="#5a1a1a", hover_color="#7a2020",
+                      command=self.quit_test).pack(side="left", padx=10)
+
         self.next_btn = ctk.CTkButton(nav_frame, text="Next →", width=120,
                                       command=self.next_question)
         self.next_btn.pack(side="right", padx=10)
-        
+
         self.submit_btn = ctk.CTkButton(nav_frame, text="Submit Test", width=120,
                                        fg_color="#d32f2f", hover_color="#b71c1c",
                                        command=self.submit_test, state="disabled")
@@ -898,20 +959,73 @@ class TestTakingWindow:
         if answer:
             self.answers[question_id] = answer
     
+    def _tick_timer(self):
+        """Update countdown each second; auto-submit when it hits zero."""
+        if self.submitted:
+            return
+        if self.remaining_seconds <= 0:
+            if self.timer_label:
+                self.timer_label.configure(text="⏰ Time's up!", text_color="#ff4d4d")
+            self._auto_submit()
+            return
+        mins, secs = divmod(self.remaining_seconds, 60)
+        if self.timer_label:
+            color = "#ff4d4d" if self.remaining_seconds <= 30 else "#ffcc00"
+            self.timer_label.configure(text=f"⏱ {mins:02d}:{secs:02d}", text_color=color)
+        self.remaining_seconds -= 1
+        try:
+            self._timer_job = self.parent.after(1000, self._tick_timer)
+        except Exception:
+            pass
+
+    def _auto_submit(self):
+        """Submit without confirmation when time runs out."""
+        if self.submitted:
+            return
+        self._save_current_answer()
+        self._do_submit(auto=True)
+
+    def quit_test(self):
+        """Exit the test without submitting."""
+        if self.submitted:
+            return
+        if not messagebox.askyesno("Quit Test",
+                                   "Are you sure you want to quit?\nYour answers will NOT be saved.",
+                                   parent=self.parent):
+            return
+        if self._timer_job is not None:
+            try:
+                self.parent.after_cancel(self._timer_job)
+            except Exception:
+                pass
+        self.submitted = True
+        _kiosk_exit(self.parent)
+        self.parent.destroy()
+
     def submit_test(self):
         """Submit the completed test."""
         self._save_current_answer()
-        
-        # Confirm submission
-        if not messagebox.askyesno("Submit Test", 
+
+        if not messagebox.askyesno("Submit Test",
                                    f"Are you sure you want to submit your answers?\n"
-                                   f"You've answered {len(self.answers)} out of {len(self.questions)} questions."):
+                                   f"You've answered {len(self.answers)} out of {len(self.questions)} questions.",
+                                   parent=self.parent):
             return
-        
-        # Format answers for server
+        self._do_submit(auto=False)
+
+    def _do_submit(self, auto: bool = False):
+        if self.submitted:
+            return
+        self.submitted = True
+        if self._timer_job is not None:
+            try:
+                self.parent.after_cancel(self._timer_job)
+            except Exception:
+                pass
+
         answer_pairs = [f"{qid}:{ans}" for qid, ans in self.answers.items()]
         cmd = f"SUBMIT_TEST|{self.test_id}|" + "|".join(answer_pairs)
-        
+
         try:
             resp = self.net.request(cmd)
             parts = resp.split("|")
@@ -921,15 +1035,20 @@ class TestTakingWindow:
                     sounds.submit_pass()
                 else:
                     sounds.submit_fail()
-                messagebox.showinfo("Test Submitted", f"Your test has been submitted!\nScore: {score:.1f}%")
+                prefix = "⏰ Time expired — test auto-submitted!\n\n" if auto else ""
                 _kiosk_exit(self.parent)
+                messagebox.showinfo("Test Submitted",
+                                    f"{prefix}Your test has been submitted!\nScore: {score:.1f}%",
+                                    parent=self.parent)
                 self.parent.destroy()
             else:
                 sounds.error()
-                messagebox.showerror("Submission Failed", parts[1] if len(parts) > 1 else "Unknown error")
+                messagebox.showerror("Submission Failed",
+                                     parts[1] if len(parts) > 1 else "Unknown error",
+                                     parent=self.parent)
         except Exception as e:
             sounds.error()
-            messagebox.showerror("Error", f"Failed to submit test: {e}")
+            messagebox.showerror("Error", f"Failed to submit test: {e}", parent=self.parent)
 
 
 # ─────────────────────────────────────────────

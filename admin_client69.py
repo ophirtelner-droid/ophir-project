@@ -244,6 +244,10 @@ class AdminApp(ctk.CTkToplevel):
                       fg_color="gray30", hover_color="gray20",
                       command=self.refresh_all).pack(padx=16, pady=6, fill="x")
 
+        ctk.CTkButton(self.sidebar, text="🚪  Sign Out",
+                      fg_color="#3a1010", hover_color="#5a1a1a",
+                      command=self._on_close).pack(padx=16, pady=(12, 6), fill="x")
+
         # ── Main area ────────────────────────────
         main = ctk.CTkFrame(self)
         main.pack(side="left", fill="both", expand=True, padx=0, pady=0)
