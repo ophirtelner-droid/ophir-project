@@ -19,7 +19,7 @@ ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("green")
 
 # ── Shared logo image (loaded once, reused across all windows) ─────
-_LOGO_PATH = os.path.join(os.path.dirname(__file__), "image-1779791878542.png")
+_LOGO_PATH = os.path.join(os.path.dirname(__file__), "teacherLogo.png")
 _LOGO_IMAGE = None
 
 def _get_logo(size=(130, 130)):
