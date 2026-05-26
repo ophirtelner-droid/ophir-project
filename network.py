@@ -13,7 +13,7 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 
 HOST = "127.0.0.1"
-PORT = 9999
+PORT = 9998
 
 
 # ─────────────────────────────────────────────

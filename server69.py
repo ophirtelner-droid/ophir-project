@@ -28,8 +28,8 @@ from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 # ─────────────────────────────────────────────
 #  Configuration
 # ─────────────────────────────────────────────
-HOST = "127.0.0.1"
-PORT = 9999
+HOST = "0.0.0.0"
+PORT = 9998
 DB_PATH = "exam_system.db"
 BUFFER = 4096
 

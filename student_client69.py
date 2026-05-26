@@ -500,8 +500,8 @@ class WaitingRoomApp(ctk.CTkToplevel):
     def _on_close(self):
         self._polling = False
         self.net.close()
-        self.quit()   # exits the mainloop() called in LoginWindow.do_login
         self.destroy()
+        self.quit()
 
     def _build_ui(self):
         self.configure(fg_color=_DBG)
@@ -567,8 +567,8 @@ class WaitingRoomApp(ctk.CTkToplevel):
         """Signal LoginWindow to open the full student app after this quits."""
         self._polling = False
         self._transitioned = True   # flag checked by LoginWindow.do_login
-        self.quit()                 # exits mainloop cleanly; LoginWindow handles the rest
         self.destroy()
+        self.quit()
 
 
 # ─────────────────────────────────────────────
@@ -589,14 +589,14 @@ class StudentApp(ctk.CTkToplevel):
 
     def _on_close(self):
         self.net.close()
-        self.quit()   # exits the mainloop() called in LoginWindow.do_login
         self.destroy()
+        self.quit()
 
     def _logout(self):
         self._logged_out = True
         self.net.close()
-        self.quit()
         self.destroy()
+        self.quit()
 
     def _build_ui(self):
         # Sidebar
@@ -795,19 +795,29 @@ class StudentApp(ctk.CTkToplevel):
 
     def start_test(self, test_id: int, test_title: str):
         """Start taking a test - enter kiosk mode and show first question."""
+        # Fetch test data BEFORE entering kiosk mode so we can bail out cleanly on errors
+        resp = self.net.request(f"GET_TEST|{test_id}")
+
+        if resp.startswith("ERROR|"):
+            msg = resp.split("|", 1)[1]
+            messagebox.showerror("Cannot Start Test", msg, parent=self)
+            return
+
+        title, time_limit, questions = parse_test_data(resp)
+
+        if not questions:
+            messagebox.showerror("Cannot Start Test",
+                                 "This test has no questions or is unavailable.",
+                                 parent=self)
+            return
+
         test_window = ctk.CTkToplevel(self)
         test_window.title(f"Quizy - Test: {test_title}")
         test_window.geometry("900x600")
         test_window.minsize(800, 500)
 
-        # kiosk_enter sets WM_DELETE_WINDOW to a no-op and grabs input
         _kiosk_enter(test_window)
 
-        # Fetch test data
-        resp = self.net.request(f"GET_TEST|{test_id}")
-        title, time_limit, questions = parse_test_data(resp)
-
-        # Create test interface
         test_app = TestTakingWindow(test_window, self.net, title, questions, test_id, self.username, time_limit)
         test_app.show_question(0)
 
