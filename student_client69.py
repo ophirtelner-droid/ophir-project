@@ -901,11 +901,16 @@ class TestTakingWindow:
         self.prev_btn = ctk.CTkButton(nav_frame, text="← Previous", width=120,
                                       command=self.prev_question, state="disabled")
         self.prev_btn.pack(side="left", padx=10)
-        
+
+        self.quit_btn = ctk.CTkButton(nav_frame, text="✖  Quit Test", width=120,
+                                      fg_color="#4a4a4a", hover_color="#222222",
+                                      command=self.quit_test)
+        self.quit_btn.pack(side="left", padx=10)
+
         self.next_btn = ctk.CTkButton(nav_frame, text="Next →", width=120,
                                       command=self.next_question)
         self.next_btn.pack(side="right", padx=10)
-        
+
         self.submit_btn = ctk.CTkButton(nav_frame, text="Submit Test", width=120,
                                        fg_color="#d32f2f", hover_color="#b71c1c",
                                        command=self.submit_test, state="disabled")
@@ -1022,6 +1027,23 @@ class TestTakingWindow:
             return
         self._save_current_answer()
         self._do_submit(auto=True)
+
+    def quit_test(self):
+        """Exit the test without submitting — asks for confirmation first."""
+        if self.submitted:
+            return
+        if not messagebox.askyesno(
+                "Quit Test",
+                "Are you sure you want to quit?\n\nYour answers will NOT be saved and you will NOT be marked as submitted.",
+                parent=self.parent):
+            return
+        if self._timer_job is not None:
+            try:
+                self.parent.after_cancel(self._timer_job)
+            except Exception:
+                pass
+        _kiosk_exit(self.parent)
+        self.parent.destroy()
 
     def submit_test(self):
         """Submit the completed test."""
