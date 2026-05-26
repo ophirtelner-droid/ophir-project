@@ -41,15 +41,15 @@ _CARD  = "#111E2E"   # card bg
 def _kiosk_enter(window=None):
     """
     Enter exam lockdown mode.
-    macOS: hides Dock/menu bar and disables Cmd+Q, Cmd+Tab via AppKit.
-    Windows: makes the window fullscreen and always-on-top via Tkinter.
+    - Fullscreen + always-on-top on both platforms via Tkinter.
+    - macOS: also hides Dock/menu bar and disables Cmd+Q/Tab via AppKit when available.
+    - Grabs all input focus so the student cannot switch to another window.
+    The Tkinter lock is applied via window.after() so it fires once the
+    window is actually mapped; grab_set() silently fails on unmapped windows.
     """
     system = platform.system()
 
-    if system == "Darwin":
-        if not _APPKIT_AVAILABLE:
-            print("[Kiosk] AppKit unavailable, using Tkinter-only lockdown")
-            return
+    if system == "Darwin" and _APPKIT_AVAILABLE:
         try:
             options = (
                 Opt.NSApplicationPresentationHideDock
@@ -60,39 +60,65 @@ def _kiosk_enter(window=None):
             )
             NSApp.setPresentationOptions_(options)
             NSApp.activateIgnoringOtherApps_(True)
-            print("[Kiosk] Entered macOS kiosk mode (AppKit)")
+            print("[Kiosk] Entered macOS AppKit kiosk mode")
         except Exception as e:
-            print(f"[Kiosk] Error entering kiosk mode: {e}")
+            print(f"[Kiosk] AppKit kiosk error: {e}")
 
-    elif system == "Windows" and window:
+    if not window:
+        return
+
+    # Block the close button immediately (before the window renders)
+    window.protocol("WM_DELETE_WINDOW", lambda: None)
+
+    def _apply_lock():
         try:
-            window.attributes("-fullscreen", True)
+            sw = window.winfo_screenwidth()
+            sh = window.winfo_screenheight()
+            # overrideredirect removes the title bar and window chrome entirely,
+            # then we cover the whole screen manually.  This is more reliable
+            # than attributes("-fullscreen") on both macOS and Windows CTkToplevel.
+            window.overrideredirect(True)
+            window.geometry(f"{sw}x{sh}+0+0")
             window.attributes("-topmost", True)
-            # Block Alt+F4 and window-close during the exam
-            window.protocol("WM_DELETE_WINDOW", lambda: None)
-            print("[Kiosk] Entered Windows kiosk mode")
+            window.lift()
+            window.focus_force()
+            window.grab_set()
+            print(f"[Kiosk] Window locked {sw}x{sh} ({system})")
         except Exception as e:
-            print(f"[Kiosk] Error entering kiosk mode: {e}")
+            print(f"[Kiosk] Window lockdown error: {e}")
 
-
-def _kiosk_exit(window=None):
-    """Restore normal presentation options."""
-    system = platform.system()
-
-    if system == "Darwin":
-        if not _APPKIT_AVAILABLE:
-            return
+    # Recapture focus whenever the OS tries to hand it to another window.
+    # Use after() to avoid re-entering the FocusOut handler recursively.
+    def _refocus(_event=None):
         try:
-            NSApp.setPresentationOptions_(Opt.NSApplicationPresentationDefault)
-            print("[Kiosk] Exited macOS kiosk mode")
+            window.after(10, window.focus_force)
         except Exception:
             pass
 
-    elif system == "Windows" and window:
+    window.bind("<FocusOut>", _refocus)
+
+    # Defer until the window is rendered so grab_set() and geometry work
+    window.after(150, _apply_lock)
+
+
+def _kiosk_exit(window=None):
+    """Restore normal presentation options and release the input grab."""
+    system = platform.system()
+
+    if system == "Darwin" and _APPKIT_AVAILABLE:
         try:
-            window.attributes("-fullscreen", False)
+            NSApp.setPresentationOptions_(Opt.NSApplicationPresentationDefault)
+            print("[Kiosk] Exited macOS AppKit kiosk mode")
+        except Exception:
+            pass
+
+    if window:
+        try:
+            window.unbind("<FocusOut>")
+            window.grab_release()
+            window.overrideredirect(False)
             window.attributes("-topmost", False)
-            print("[Kiosk] Exited Windows kiosk mode")
+            print(f"[Kiosk] Window unlocked ({system})")
         except Exception:
             pass
 
@@ -114,6 +140,10 @@ def capture_webcam_snapshot(username: str) -> str:
         if not cap.isOpened():
             print("[Camera] No webcam detected — skipping snapshot.")
             return ""
+        # Discard the first ~20 frames so auto-exposure can settle;
+        # without this the captured frame is nearly black.
+        for _ in range(20):
+            cap.read()
         ret, frame = cap.read()
         cap.release()
         if ret:
@@ -436,7 +466,16 @@ class LoginWindow(ctk.CTk):
                 if getattr(app, '_transitioned', False):
                     student_app = StudentApp(self.net, u)
                     student_app.mainloop()
-            self.destroy()
+
+            # Reconnect and show login again so the student can log in as someone else
+            try:
+                self.net = NetworkClient()
+                self.net.connect()
+            except Exception:
+                pass
+            self.username_entry.delete(0, "end")
+            self.password_entry.delete(0, "end")
+            self.deiconify()
         else:
             sounds.error()
             messagebox.showerror("Login Failed",
@@ -471,8 +510,8 @@ class WaitingRoomApp(ctk.CTkToplevel):
     def _on_close(self):
         self._polling = False
         self.net.close()
-        self.quit()   # exits the mainloop() called in LoginWindow.do_login
         self.destroy()
+        self.quit()
 
     def _build_ui(self):
         self.configure(fg_color=_DBG)
@@ -538,8 +577,8 @@ class WaitingRoomApp(ctk.CTkToplevel):
         """Signal LoginWindow to open the full student app after this quits."""
         self._polling = False
         self._transitioned = True   # flag checked by LoginWindow.do_login
-        self.quit()                 # exits mainloop cleanly; LoginWindow handles the rest
         self.destroy()
+        self.quit()
 
 
 # ─────────────────────────────────────────────
@@ -573,8 +612,14 @@ class StudentApp(ctk.CTkToplevel):
     def _on_close(self):
         self._auto_refreshing = False
         self.net.close()
-        self.quit()   # exits the mainloop() called in LoginWindow.do_login
         self.destroy()
+        self.quit()
+
+    def _logout(self):
+        self._logged_out = True
+        self.net.close()
+        self.destroy()
+        self.quit()
 
     def _build_ui(self):
         # Sidebar
@@ -620,6 +665,11 @@ class StudentApp(ctk.CTkToplevel):
                       anchor="w", height=34,
                       command=self._refresh_current).pack(padx=14, pady=(16, 3), fill="x")
 
+        ctk.CTkButton(self.sidebar, text="🚪  Log Out",
+                      fg_color="#1a2030", hover_color="#8B0000",
+                      anchor="w", height=34,
+                      command=self._logout).pack(padx=14, pady=(6, 3), fill="x", side="bottom")
+
         # Main content area
         self.main = ctk.CTkFrame(self, fg_color="#0D1B2A")
         self.main.pack(side="left", fill="both", expand=True)
@@ -639,14 +689,19 @@ class StudentApp(ctk.CTkToplevel):
             self.pic_label.configure(text="📷 No picture")
 
     def update_picture(self):
-        msg = messagebox.askyesno("Update Picture", "Take a new profile picture with your webcam?")
+        # Pass parent=self so tkinter anchors the dialog to this window and
+        # returns focus cleanly — without it the window stays in a broken
+        # grab state and every click re-opens the dialog.
+        msg = messagebox.askyesno("Update Picture",
+                                  "Take a new profile picture with your webcam?",
+                                  parent=self)
         if msg:
             res = capture_webcam_snapshot(self.username)
             if res:
                 self.load_profile_picture()
-                messagebox.showinfo("Updated", "Profile picture updated!")
+                messagebox.showinfo("Updated", "Profile picture updated!", parent=self)
             else:
-                messagebox.showerror("Error", "Could not capture webcam.")
+                messagebox.showerror("Error", "Could not capture webcam.", parent=self)
 
     def _clear_main(self):
         for w in self.main.winfo_children():
@@ -763,32 +818,30 @@ class StudentApp(ctk.CTkToplevel):
 
     def start_test(self, test_id: int, test_title: str):
         """Start taking a test - enter kiosk mode and show first question."""
-        # Block retakes before entering kiosk mode
-        try:
-            check = self.net.request(f"CHECK_SUBMISSION|{test_id}")
-            if check.startswith("SUBMISSION_STATUS|1"):
-                messagebox.showinfo("Already Submitted",
-                                    f"You have already submitted '{test_title}'.\n"
-                                    "Check 'My Results' to see your score.")
-                return
-        except Exception:
-            pass  # If check fails, proceed and let the server block on submit
+        # Fetch test data BEFORE entering kiosk mode so we can bail out cleanly on errors
+        resp = self.net.request(f"GET_TEST|{test_id}")
 
-        # Create test window first so Windows kiosk can reference it
+        if resp.startswith("ERROR|"):
+            msg = resp.split("|", 1)[1]
+            messagebox.showerror("Cannot Start Test", msg, parent=self)
+            return
+
+        title, time_limit, questions = parse_test_data(resp)
+
+        if not questions:
+            messagebox.showerror("Cannot Start Test",
+                                 "This test has no questions or is unavailable.",
+                                 parent=self)
+            return
+
+
         test_window = ctk.CTkToplevel(self)
         test_window.title(f"Quizy - Test: {test_title}")
         test_window.geometry("900x600")
         test_window.minsize(800, 500)
-        test_window.protocol("WM_DELETE_WINDOW", lambda: self._exit_test(test_window))
 
-        # Enter kiosk mode (platform-aware)
         _kiosk_enter(test_window)
 
-        # Fetch test data
-        resp = self.net.request(f"GET_TEST|{test_id}")
-        title, time_limit, questions = parse_test_data(resp)
-
-        # Create test interface
         test_app = TestTakingWindow(test_window, self.net, title, questions, test_id, self.username, time_limit)
         test_app.show_question(0)
 
@@ -977,7 +1030,8 @@ class TestTakingWindow:
 
         if not messagebox.askyesno("Submit Test",
                                    f"Are you sure you want to submit your answers?\n"
-                                   f"You've answered {len(self.answers)} out of {len(self.questions)} questions."):
+                                   f"You've answered {len(self.answers)} out of {len(self.questions)} questions.",
+                                   parent=self.parent):
             return
         self._do_submit(auto=False)
 
@@ -1004,15 +1058,19 @@ class TestTakingWindow:
                 else:
                     sounds.submit_fail()
                 prefix = "⏰ Time expired — test auto-submitted!\n\n" if auto else ""
-                messagebox.showinfo("Test Submitted", f"{prefix}Your test has been submitted!\nScore: {score:.1f}%")
                 _kiosk_exit(self.parent)
+                messagebox.showinfo("Test Submitted",
+                                    f"{prefix}Your test has been submitted!\nScore: {score:.1f}%",
+                                    parent=self.parent)
                 self.parent.destroy()
             else:
                 sounds.error()
-                messagebox.showerror("Submission Failed", parts[1] if len(parts) > 1 else "Unknown error")
+                messagebox.showerror("Submission Failed",
+                                     parts[1] if len(parts) > 1 else "Unknown error",
+                                     parent=self.parent)
         except Exception as e:
             sounds.error()
-            messagebox.showerror("Error", f"Failed to submit test: {e}")
+            messagebox.showerror("Error", f"Failed to submit test: {e}", parent=self.parent)
 
 
 # ─────────────────────────────────────────────

@@ -330,9 +330,7 @@ class LoginWindow(ctk.CTk):
                 return
             sounds.login()
             self.withdraw()
-            app = TeacherApp(self.net, u)
-            app.mainloop()
-            self.destroy()
+            TeacherApp(self.net, u)
         else:
             sounds.error()
             messagebox.showerror("Login Failed", parts[1] if len(parts) > 1
@@ -358,8 +356,8 @@ class TeacherApp(ctk.CTkToplevel):
 
     def _on_close(self):
         self.net.close()
-        self.quit()   # exits the mainloop() called in LoginWindow.do_login
         self.destroy()
+        self.quit()  # exits LoginWindow's mainloop, ending the program
 
     def _build_ui(self):
         # ── Sidebar ────────────────────────
