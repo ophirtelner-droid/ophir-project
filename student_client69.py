@@ -241,13 +241,16 @@ class ForgotPasswordDialog(ctk.CTkToplevel):
         ctk.CTkButton(self, text="Send Code", command=self.send_code).pack(pady=20)
 
     def send_code(self):
+        import re
         email = self.email_entry.get().strip()
-        if "@" not in email:
-            messagebox.showerror("Error", "Enter a valid email")
+        if not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
+            messagebox.showerror("Error", "Enter a valid email address (e.g. user@example.com)")
             return
         self.email = email
         resp = self.net.request(f"RECOVER_ACCOUNT|{email}")
-        messagebox.showinfo("Recovery", resp.split("|", 1)[1])
+        messagebox.showinfo("Recovery",
+                            resp.split("|", 1)[1] + "\n\nIf you don't receive a code within a minute, "
+                            "check that the email matches your registered address.")
         self.code_stage()
 
     def code_stage(self):
@@ -272,7 +275,8 @@ class ForgotPasswordDialog(ctk.CTkToplevel):
             messagebox.showinfo("Success", "Password reset successfully!")
             self.destroy()
         else:
-            messagebox.showerror("Failed", parts[1] if len(parts) > 1 else "Unknown error")
+            err = parts[1] if len(parts) > 1 else "Unknown error"
+            messagebox.showerror("Failed", f"{err}\n\nMake sure the code is correct and hasn't expired (10 min).")
 
 # ─────────────────────────────────────────────
 #  Register window
@@ -590,10 +594,23 @@ class StudentApp(ctk.CTkToplevel):
         self.geometry("820x580")
         self.minsize(700, 450)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._auto_refreshing = True
         self._build_ui()
         self.show_tests_tab()
+        self.after(8_000, self._poll)
+
+    def _poll(self):
+        if not self._auto_refreshing:
+            return
+        try:
+            if self._current_tab == "tests":
+                self.show_tests_tab()
+        except Exception:
+            pass
+        self.after(8_000, self._poll)
 
     def _on_close(self):
+        self._auto_refreshing = False
         self.net.close()
         self.destroy()
         self.quit()
@@ -816,6 +833,7 @@ class StudentApp(ctk.CTkToplevel):
                                  "This test has no questions or is unavailable.",
                                  parent=self)
             return
+
 
         test_window = ctk.CTkToplevel(self)
         test_window.title(f"Quizy - Test: {test_title}")

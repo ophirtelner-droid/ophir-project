@@ -82,13 +82,16 @@ class ForgotPasswordDialog(ctk.CTkToplevel):
         ctk.CTkButton(self, text="Send Code", command=self.send_code).pack(pady=20)
 
     def send_code(self):
+        import re
         email = self.email_entry.get().strip()
-        if "@" not in email:
-            messagebox.showerror("Error", "Enter a valid email")
+        if not re.match(r'^[^@\s]+@[^@\s]+\.[^@\s]+$', email):
+            messagebox.showerror("Error", "Enter a valid email address (e.g. user@example.com)")
             return
         self.email = email
         resp = self.net.request(f"RECOVER_ACCOUNT|{email}")
-        messagebox.showinfo("Recovery", resp.split("|", 1)[1])
+        messagebox.showinfo("Recovery",
+                            resp.split("|", 1)[1] + "\n\nIf you don't receive a code within a minute, "
+                            "check that the email matches your registered address.")
         self.code_stage()
 
     def code_stage(self):
@@ -113,7 +116,8 @@ class ForgotPasswordDialog(ctk.CTkToplevel):
             messagebox.showinfo("Success", "Password reset successfully!")
             self.destroy()
         else:
-            messagebox.showerror("Failed", parts[1] if len(parts) > 1 else "Unknown error")
+            err = parts[1] if len(parts) > 1 else "Unknown error"
+            messagebox.showerror("Failed", f"{err}\n\nMake sure the code is correct and hasn't expired (10 min).")
 
 # ─────────────────────────────────────────────
 #  Login window
