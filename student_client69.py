@@ -16,6 +16,21 @@ import platform
 from PIL import Image
 import sounds
 
+# ── Shared logo image (loaded once, reused across all windows) ─────
+_LOGO_PATH = os.path.join(os.path.dirname(__file__), "image-1779791878542.png")
+_LOGO_IMAGE = None
+
+def _get_logo(size=(130, 130)):
+    """Return a CTkImage of the logo, or None if the file is missing."""
+    global _LOGO_IMAGE
+    if _LOGO_IMAGE is None:
+        try:
+            img = Image.open(_LOGO_PATH)
+            _LOGO_IMAGE = ctk.CTkImage(light_image=img, dark_image=img, size=size)
+        except Exception as e:
+            print(f"[Logo] Could not load logo: {e}")
+    return _LOGO_IMAGE
+
 try:
     from AppKit import NSApp, NSApplicationPresentationOptions as Opt
     _APPKIT_AVAILABLE = True
@@ -287,10 +302,14 @@ class RegisterWindow(ctk.CTkToplevel):
         brand = ctk.CTkFrame(self, width=210, fg_color=_PRI, corner_radius=0)
         brand.pack(side="left", fill="y")
         brand.pack_propagate(False)
-        ctk.CTkLabel(brand, text="Q", font=ctk.CTkFont(size=64, weight="bold"),
-                     text_color="white").pack(pady=(55, 0))
+        logo = _get_logo(size=(130, 130))
+        if logo:
+            ctk.CTkLabel(brand, image=logo, text="").pack(pady=(40, 0))
+        else:
+            ctk.CTkLabel(brand, text="Q", font=ctk.CTkFont(size=64, weight="bold"),
+                         text_color="white").pack(pady=(55, 0))
         ctk.CTkLabel(brand, text="Quizy", font=ctk.CTkFont(size=20, weight="bold"),
-                     text_color="white").pack()
+                     text_color="white").pack(pady=(6, 0))
         ctk.CTkLabel(brand, text="Student Portal", font=ctk.CTkFont(size=12),
                      text_color=_DIM).pack(pady=(4, 0))
 
@@ -379,10 +398,14 @@ class LoginWindow(ctk.CTk):
         brand = ctk.CTkFrame(self, width=210, fg_color=_PRI, corner_radius=0)
         brand.pack(side="left", fill="y")
         brand.pack_propagate(False)
-        ctk.CTkLabel(brand, text="Q", font=ctk.CTkFont(size=64, weight="bold"),
-                     text_color="white").pack(pady=(55, 0))
+        logo = _get_logo(size=(130, 130))
+        if logo:
+            ctk.CTkLabel(brand, image=logo, text="").pack(pady=(40, 0))
+        else:
+            ctk.CTkLabel(brand, text="Q", font=ctk.CTkFont(size=64, weight="bold"),
+                         text_color="white").pack(pady=(55, 0))
         ctk.CTkLabel(brand, text="Quizy", font=ctk.CTkFont(size=20, weight="bold"),
-                     text_color="white").pack()
+                     text_color="white").pack(pady=(6, 0))
         ctk.CTkLabel(brand, text="Student Portal", font=ctk.CTkFont(size=12),
                      text_color=_DIM).pack(pady=(4, 0))
 
