@@ -270,6 +270,7 @@ class LoginWindow(ctk.CTk):
 
         try:
             self.net.connect()
+            self.net.start_watchdog()
         except Exception as e:
             messagebox.showerror("Connection Error",
                                  f"Cannot connect to server:\n{e}")
@@ -277,6 +278,7 @@ class LoginWindow(ctk.CTk):
             return
 
         self._build_ui()
+        self._poll_disconnect()
 
     def _build_ui(self):
         brand = ctk.CTkFrame(self, width=210, fg_color=_PRI, corner_radius=0)
@@ -332,6 +334,17 @@ class LoginWindow(ctk.CTk):
                       hover_color=_DBG, height=24,
                       command=lambda: ForgotPasswordDialog(self, self.net)).pack()
 
+    def _poll_disconnect(self):
+        if self.net.disconnected:
+            self.net.stop_watchdog()
+            messagebox.showerror(
+                "Server Disconnected",
+                "The server has crashed or stopped responding.\nThe application will now close."
+            )
+            self.quit()
+            return
+        self.after(2000, self._poll_disconnect)
+
     def do_login(self):
         u = self.username_entry.get().strip()
         p = self.password_entry.get().strip()
@@ -372,6 +385,18 @@ class TeacherApp(ctk.CTkToplevel):
 
         self._build_ui()
         self.refresh_tests()
+        self._poll_disconnect()
+
+    def _poll_disconnect(self):
+        if self.net.disconnected:
+            self.net.stop_watchdog()
+            messagebox.showerror(
+                "Server Disconnected",
+                "The server has crashed or stopped responding.\nThe application will now close."
+            )
+            self.quit()
+            return
+        self.after(2000, self._poll_disconnect)
 
     def _on_close(self):
         self.net.close()

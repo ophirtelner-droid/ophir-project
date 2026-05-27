@@ -581,6 +581,8 @@ class ClientSession:
             "CHECK_SUBMISSION":    self.cmd_check_submission,
             # ── Logging commands ───────────────────────────────────────────
             "GET_ACTIVITY_LOGS":   self.cmd_get_activity_logs,
+            # ── Heartbeat ──────────────────────────────────────────────────
+            "PING":                self.cmd_ping,
         }
         fn = handlers.get(cmd)
         if fn:
@@ -589,6 +591,11 @@ class ClientSession:
             except Exception as e:
                 return f"ERROR|{e}"
         return "ERROR|Unknown command"
+
+    # ── Heartbeat ─────────────────────────────
+
+    def cmd_ping(self, args):
+        return "PONG"
 
     # ── Auth commands ─────────────────────────
 
