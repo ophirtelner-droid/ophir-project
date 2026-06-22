@@ -57,6 +57,9 @@ def capture_webcam_snapshot(username: str) -> str:
         if not cap.isOpened():
             print("[Camera] No webcam detected — skipping snapshot.")
             return ""
+        # Warm up the camera so auto-exposure adjusts before the real capture
+        for _ in range(10):
+            cap.read()
         ret, frame = cap.read()
         cap.release()
         if ret:
@@ -362,7 +365,7 @@ class LoginWindow(ctk.CTk):
                 return
             sounds.login()
             self.withdraw()
-            TeacherApp(self.net, u)
+            TeacherApp(self.net, u, login_win=self)
         else:
             sounds.error()
             messagebox.showerror("Login Failed", parts[1] if len(parts) > 1
@@ -374,10 +377,11 @@ class LoginWindow(ctk.CTk):
 # ─────────────────────────────────────────────
 
 class TeacherApp(ctk.CTkToplevel):
-    def __init__(self, net: NetworkClient, username: str):
+    def __init__(self, net: NetworkClient, username: str, login_win=None):
         super().__init__()
         self.net = net
         self.username = username
+        self.login_win = login_win
         self.title(f"Quizy – Teacher: {username}")
         self.geometry("900x620")
         self.minsize(800, 500)
@@ -398,6 +402,22 @@ class TeacherApp(ctk.CTkToplevel):
             return
         self.after(2000, self._poll_disconnect)
 
+    def _logout(self):
+        self.net.close()
+        self.destroy()
+        if self.login_win:
+            try:
+                self.login_win.net = NetworkClient()
+                self.login_win.net.connect()
+                self.login_win.net.start_watchdog()
+            except Exception:
+                pass
+            self.login_win.username_entry.delete(0, "end")
+            self.login_win.password_entry.delete(0, "end")
+            self.login_win.deiconify()
+        else:
+            self.quit()
+
     def _on_close(self):
         self.net.close()
         self.destroy()
@@ -410,25 +430,42 @@ class TeacherApp(ctk.CTkToplevel):
         self.sidebar.pack_propagate(False)
 
         logo_bar = ctk.CTkFrame(self.sidebar, height=65, fg_color=_PRI, corner_radius=0)
-        logo_bar.pack(fill="x")
+        logo_bar.pack(fill="x", side="top")
         logo_bar.pack_propagate(False)
         ctk.CTkLabel(logo_bar, text="Quizy",
                      font=ctk.CTkFont(size=22, weight="bold"),
                      text_color="white").pack(expand=True)
 
-        self.pic_label = ctk.CTkLabel(self.sidebar, text="")
+        # Bottom buttons pinned before middle content so they always show
+        ctk.CTkButton(self.sidebar, text="🚪  Log Out",
+                      fg_color="#3a1010", hover_color="#5a1a1a",
+                      anchor="w", height=34,
+                      command=self._logout).pack(padx=14, pady=(4, 14), fill="x", side="bottom")
+
+        ctk.CTkButton(self.sidebar, text="🔄  Refresh",
+                      fg_color="#1a2a1a", hover_color="#253025",
+                      anchor="w", height=34,
+                      command=self.refresh_tests).pack(padx=14, pady=(8, 2), fill="x", side="bottom")
+
+        # Scrollable middle area for profile + nav buttons
+        scroll = ctk.CTkScrollableFrame(self.sidebar, fg_color="transparent",
+                                        scrollbar_button_color="#1a401a",
+                                        scrollbar_button_hover_color=_PRI)
+        scroll.pack(fill="both", expand=True)
+
+        self.pic_label = ctk.CTkLabel(scroll, text="")
         self.pic_label.pack(pady=(18, 4))
         self.load_profile_picture()
 
-        ctk.CTkLabel(self.sidebar, text=f"👤 {self.username}",
+        ctk.CTkLabel(scroll, text=f"👤 {self.username}",
                      font=ctk.CTkFont(size=12), text_color=_DIM).pack(pady=(0, 4))
-        ctk.CTkLabel(self.sidebar, text="Teacher",
+        ctk.CTkLabel(scroll, text="Teacher",
                      font=ctk.CTkFont(size=11), text_color="gray").pack(pady=(0, 10))
-        ctk.CTkButton(self.sidebar, text="📷  Update Picture",
+        ctk.CTkButton(scroll, text="📷  Update Picture",
                       fg_color="#0f2010", hover_color=_PRI, height=34,
                       command=self.update_picture).pack(padx=14, pady=(0, 12), fill="x")
 
-        sep = ctk.CTkFrame(self.sidebar, height=1, fg_color="#1a401a")
+        sep = ctk.CTkFrame(scroll, height=1, fg_color="#1a401a")
         sep.pack(fill="x", padx=14, pady=(0, 10))
 
         for icon, label, color, cmd in [
@@ -440,20 +477,10 @@ class TeacherApp(ctk.CTkToplevel):
             ("👥",  "My Class",      "#1f4d2c", self.open_class_manager),
             ("📋",  "Activity Logs", "#3d1f6e", self.view_activity_logs),
         ]:
-            ctk.CTkButton(self.sidebar, text=f"{icon}  {label}",
+            ctk.CTkButton(scroll, text=f"{icon}  {label}",
                           fg_color=color, hover_color=_HOV,
                           anchor="w", height=36,
                           command=cmd).pack(padx=14, pady=3, fill="x")
-
-        ctk.CTkButton(self.sidebar, text="🔄  Refresh",
-                      fg_color="#1a2a1a", hover_color="#253025",
-                      anchor="w", height=34,
-                      command=self.refresh_tests).pack(padx=14, pady=(12, 3), fill="x")
-
-        ctk.CTkButton(self.sidebar, text="🚪  Sign Out",
-                      fg_color="#3a1010", hover_color="#5a1a1a",
-                      anchor="w", height=34,
-                      command=self._on_close).pack(padx=14, pady=(6, 14), fill="x")
 
         # ── Main area ────────────────────────
         main = ctk.CTkFrame(self, fg_color=_DBG)

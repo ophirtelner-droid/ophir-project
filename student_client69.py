@@ -1068,29 +1068,80 @@ class TestTakingWindow:
         """Exit the test without submitting — asks for confirmation first."""
         if self.submitted:
             return
-        if not messagebox.askyesno(
-                "Quit Test",
-                "Are you sure you want to quit?\n\nYour answers will NOT be saved and you will NOT be marked as submitted.",
-                parent=self.parent):
-            return
-        if self._timer_job is not None:
-            try:
-                self.parent.after_cancel(self._timer_job)
-            except Exception:
-                pass
-        _kiosk_exit(self.parent)
-        self.parent.destroy()
+        self._show_quit_overlay()
+
+    def _show_quit_overlay(self):
+        """Show an in-window confirmation overlay (avoids macOS fullscreen dialog issues)."""
+        overlay = ctk.CTkFrame(self.parent, fg_color="#1a1a1a",
+                               corner_radius=16, border_width=2, border_color="#555")
+        overlay.place(relx=0.5, rely=0.5, anchor="center", relwidth=0.5, relheight=0.35)
+
+        ctk.CTkLabel(overlay, text="Quit Test?",
+                     font=ctk.CTkFont(size=20, weight="bold"),
+                     text_color="white").pack(pady=(28, 6))
+        ctk.CTkLabel(overlay,
+                     text="Your answers will NOT be saved\nand you will NOT be marked as submitted.",
+                     font=ctk.CTkFont(size=13), text_color="#aaaaaa",
+                     justify="center").pack(pady=(0, 24))
+
+        btn_row = ctk.CTkFrame(overlay, fg_color="transparent")
+        btn_row.pack()
+
+        def do_quit():
+            overlay.destroy()
+            if self._timer_job is not None:
+                try:
+                    self.parent.after_cancel(self._timer_job)
+                except Exception:
+                    pass
+            _kiosk_exit(self.parent)
+            self.parent.destroy()
+
+        def do_cancel():
+            overlay.destroy()
+
+        ctk.CTkButton(btn_row, text="Yes, Quit", width=120,
+                      fg_color="#d32f2f", hover_color="#b71c1c",
+                      command=do_quit).pack(side="left", padx=10)
+        ctk.CTkButton(btn_row, text="Cancel", width=120,
+                      fg_color="#444", hover_color="#666",
+                      command=do_cancel).pack(side="left", padx=10)
 
     def submit_test(self):
         """Submit the completed test."""
         self._save_current_answer()
+        self._show_submit_overlay()
 
-        if not messagebox.askyesno("Submit Test",
-                                   f"Are you sure you want to submit your answers?\n"
-                                   f"You've answered {len(self.answers)} out of {len(self.questions)} questions.",
-                                   parent=self.parent):
-            return
-        self._do_submit(auto=False)
+    def _show_submit_overlay(self):
+        """In-window confirmation overlay for submitting (avoids macOS fullscreen dialog issues)."""
+        overlay = ctk.CTkFrame(self.parent, fg_color="#1a1a1a",
+                               corner_radius=16, border_width=2, border_color="#555")
+        overlay.place(relx=0.5, rely=0.5, anchor="center", relwidth=0.5, relheight=0.35)
+
+        ctk.CTkLabel(overlay, text="Submit Test?",
+                     font=ctk.CTkFont(size=20, weight="bold"),
+                     text_color="white").pack(pady=(28, 6))
+        ctk.CTkLabel(overlay,
+                     text=f"You've answered {len(self.answers)} of {len(self.questions)} questions.\nThis cannot be undone.",
+                     font=ctk.CTkFont(size=13), text_color="#aaaaaa",
+                     justify="center").pack(pady=(0, 24))
+
+        btn_row = ctk.CTkFrame(overlay, fg_color="transparent")
+        btn_row.pack()
+
+        def do_submit():
+            overlay.destroy()
+            self._do_submit(auto=False)
+
+        def do_cancel():
+            overlay.destroy()
+
+        ctk.CTkButton(btn_row, text="Submit", width=120,
+                      fg_color="#1565c0", hover_color="#0d47a1",
+                      command=do_submit).pack(side="left", padx=10)
+        ctk.CTkButton(btn_row, text="Cancel", width=120,
+                      fg_color="#444", hover_color="#666",
+                      command=do_cancel).pack(side="left", padx=10)
 
     def _do_submit(self, auto: bool = False):
         if self.submitted:
@@ -1116,18 +1167,34 @@ class TestTakingWindow:
                     sounds.submit_fail()
                 prefix = "⏰ Time expired — test auto-submitted!\n\n" if auto else ""
                 _kiosk_exit(self.parent)
-                messagebox.showinfo("Test Submitted",
-                                    f"{prefix}Your test has been submitted!\nScore: {score:.1f}%",
-                                    parent=self.parent)
-                self.parent.destroy()
+                self._show_result_overlay(f"{prefix}Test submitted!\nScore: {score:.1f}%", success=True)
             else:
+                _kiosk_exit(self.parent)
                 sounds.error()
-                messagebox.showerror("Submission Failed",
-                                     parts[1] if len(parts) > 1 else "Unknown error",
-                                     parent=self.parent)
+                msg = parts[1] if len(parts) > 1 else "Unknown error"
+                self._show_result_overlay(msg, success=False)
         except Exception as e:
+            _kiosk_exit(self.parent)
             sounds.error()
-            messagebox.showerror("Error", f"Failed to submit test: {e}", parent=self.parent)
+            self._show_result_overlay(f"Failed to submit test:\n{e}", success=False)
+
+    def _show_result_overlay(self, message: str, success: bool):
+        """Show a final result/error overlay and close the test window when dismissed."""
+        overlay = ctk.CTkFrame(self.parent, fg_color="#1a1a1a",
+                               corner_radius=16, border_width=2,
+                               border_color="#2e7d32" if success else "#c62828")
+        overlay.place(relx=0.5, rely=0.5, anchor="center", relwidth=0.55, relheight=0.38)
+
+        icon = "✅" if success else "❌"
+        ctk.CTkLabel(overlay, text=icon,
+                     font=ctk.CTkFont(size=36)).pack(pady=(24, 4))
+        ctk.CTkLabel(overlay, text=message,
+                     font=ctk.CTkFont(size=14), text_color="white",
+                     justify="center").pack(pady=(0, 24))
+
+        ctk.CTkButton(overlay, text="Close", width=140,
+                      fg_color="#444", hover_color="#666",
+                      command=self.parent.destroy).pack(pady=(0, 20))
 
 
 # ─────────────────────────────────────────────

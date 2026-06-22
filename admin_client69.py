@@ -162,9 +162,6 @@ class LoginWindow(ctk.CTk):
                       fg_color="#7c3aed", hover_color="#5b21b6",
                       command=self.do_login).pack(padx=16, pady=(0, 16))
 
-        ctk.CTkButton(frame, text="Forgot Password / Username?", fg_color="transparent", 
-                      text_color="gray", hover_color="#333333", height=20,
-                      command=lambda: ForgotPasswordDialog(self, self.net)).pack(pady=(0, 10))
 
     def do_login(self):
         u = self.username_entry.get().strip()
@@ -246,7 +243,7 @@ class AdminApp(ctk.CTkToplevel):
 
         ctk.CTkButton(self.sidebar, text="🚪  Sign Out",
                       fg_color="#3a1010", hover_color="#5a1a1a",
-                      command=self._on_close).pack(padx=16, pady=(12, 6), fill="x")
+                      command=self._on_close).pack(padx=16, pady=(12, 6), fill="x", side="bottom")
 
         # ── Main area ────────────────────────────
         main = ctk.CTkFrame(self)
