@@ -31,14 +31,12 @@ def _get_logo(size=(130, 130)):
             print(f"[Logo] Could not load logo: {e}")
     return _LOGO_IMAGE
 
-try:
-    from AppKit import NSApp, NSApplicationPresentationOptions as Opt
-    _APPKIT_AVAILABLE = True
-except ImportError:
-    _APPKIT_AVAILABLE = False
+_APPKIT_AVAILABLE = False
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
+
+_kiosk_active = False
 
 # ── Student brand colours ──────────────────────────────────────────
 _PRI   = "#1565C0"   # deep blue
@@ -62,22 +60,9 @@ def _kiosk_enter(window=None):
     The Tkinter lock is applied via window.after() so it fires once the
     window is actually mapped; grab_set() silently fails on unmapped windows.
     """
+    global _kiosk_active
+    _kiosk_active = True
     system = platform.system()
-
-    if system == "Darwin" and _APPKIT_AVAILABLE:
-        try:
-            options = (
-                Opt.NSApplicationPresentationHideDock
-                | Opt.NSApplicationPresentationHideMenuBar
-                | Opt.NSApplicationPresentationDisableForceQuit
-                | Opt.NSApplicationPresentationDisableSessionTermination
-                | Opt.NSApplicationPresentationDisableHideApplication
-            )
-            NSApp.setPresentationOptions_(options)
-            NSApp.activateIgnoringOtherApps_(True)
-            print("[Kiosk] Entered macOS AppKit kiosk mode")
-        except Exception as e:
-            print(f"[Kiosk] AppKit kiosk error: {e}")
 
     if not window:
         return
@@ -106,23 +91,34 @@ def _kiosk_enter(window=None):
 
     window.bind("<FocusOut>", _refocus)
 
+    # Block Cmd+Q / Alt+F4 at the Tkinter level as a fallback
+    window.bind("<Command-q>", lambda e: "break")
+    window.bind("<Command-w>", lambda e: "break")
+    window.bind("<Alt-F4>", lambda e: "break")
+    window.bind("<Command-Tab>", lambda e: "break")
+
+    # Override the macOS "Quit" menu command (the real Cmd+Q handler)
+    if system == "Darwin":
+        try:
+            window.tk.createcommand("tk::mac::Quit", lambda: None)
+            print("[Kiosk] Blocked tk::mac::Quit (Cmd+Q)")
+        except Exception as e:
+            print(f"[Kiosk] Failed to block Cmd+Q: {e}")
+
     # Defer the actual fullscreen + grab until the window is rendered
     window.after(150, _apply_lock)
 
 
 def _kiosk_exit(window=None):
     """Restore normal presentation options and release the input grab."""
+    global _kiosk_active
+    _kiosk_active = False
     system = platform.system()
-
-    if system == "Darwin" and _APPKIT_AVAILABLE:
-        try:
-            NSApp.setPresentationOptions_(Opt.NSApplicationPresentationDefault)
-            print("[Kiosk] Exited macOS AppKit kiosk mode")
-        except Exception:
-            pass
 
     if window:
         try:
+            if system == "Darwin":
+                window.tk.createcommand("tk::mac::Quit", window.quit)
             window.unbind("<FocusOut>")
             window.grab_release()
             window.attributes("-fullscreen", False)
@@ -647,6 +643,8 @@ class StudentApp(ctk.CTkToplevel):
         self.after(2000, self._poll_disconnect)
 
     def _on_close(self):
+        if _kiosk_active:
+            return
         self.net.close()
         self.destroy()
         self.quit()
